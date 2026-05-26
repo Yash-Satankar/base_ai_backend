@@ -1,0 +1,2442 @@
+{
+  "metadata": {
+    "name": "AI Database Rule Framework",
+    "version": "2.0",
+    "description": "Complete rule library extracted from 23 production MySQL databases across 9 business domains. Use for AI schema generation, RAG retrieval, and validation.",
+    "total_rules": 94,
+    "domains_covered": [
+      "financial",
+      "HR",
+      "security_agency",
+      "IoT_wearables",
+      "real_estate",
+      "e_learning",
+      "marine_maintenance",
+      "multi_tenant_saas",
+      "e_commerce"
+    ],
+    "categories": [
+      "architecture",
+      "audit",
+      "calendar",
+      "configuration",
+      "constraints",
+      "convention",
+      "domain",
+      "financial",
+      "identity",
+      "infrastructure",
+      "monitoring",
+      "naming",
+      "operations",
+      "performance",
+      "security",
+      "taxation",
+      "temporal",
+      "ui_architecture",
+      "validation",
+      "versioning",
+      "workflow"
+    ],
+    "priority_levels": [
+      "critical",
+      "high",
+      "medium",
+      "low"
+    ],
+    "usage": {
+      "RAG_retrieval": "Embed each rule as a vector chunk. Retrieve by trigger_when keywords.",
+      "prompt_injection": "Inject matched rules into system prompt before schema generation.",
+      "validation": "After generation, check output against enforce/avoid lists per activated rule.",
+      "fine_tuning": "Use rule_id lists as expected_rules field in training data."
+    }
+  },
+  "rules": [
+    {
+      "rule_id": 1,
+      "category": "naming",
+      "rule_name": "Naming Taxonomy",
+      "priority": "critical",
+      "trigger_when": [
+        "creating entity tables",
+        "generating schema",
+        "designing master tables",
+        "any new table is needed"
+      ],
+      "enforce": [
+        "_header_all suffix for master entity tables",
+        "_details_all suffix for child or secondary record tables",
+        "_transaction_all suffix for event or ledger record tables",
+        "_configuration_all suffix for temporal configuration tables",
+        "_archive_all suffix for historical mirror tables",
+        "_life_cycle_all suffix for status change audit tables"
+      ],
+      "avoid": [
+        "random table suffixes",
+        "mixed naming patterns in same schema",
+        "domain-specific random suffixes"
+      ],
+      "reason": "Keeps schema predictable and AI-generatable. Anyone reading table names instantly knows its role.",
+      "examples": {
+        "valid": [
+          "employee_header_all",
+          "employee_transaction_all",
+          "employee_archive_all",
+          "salary_configuration_all"
+        ],
+        "invalid": [
+          "employee_master",
+          "emp_history",
+          "employee_logs",
+          "salary_config"
+        ]
+      },
+      "tags": [
+        "naming",
+        "taxonomy",
+        "table_suffix",
+        "schema_design"
+      ]
+    },
+    {
+      "rule_id": 2,
+      "category": "identity",
+      "rule_name": "Two-ID System",
+      "priority": "critical",
+      "trigger_when": [
+        "creating any master entity table",
+        "creating business-facing records",
+        "any table that has a UI-visible identifier"
+      ],
+      "enforce": [
+        "every table must have an integer auto-increment primary key column named 'id'",
+        "every business entity must have a human-readable business ID (varchar, prefixed)",
+        "business IDs must be generated from unique_id_header_all registry table",
+        "business IDs must use alphabetic prefix (e.g. EMP-, INV-, ORD-)"
+      ],
+      "avoid": [
+        "using auto-increment integer IDs in UI or user-facing communications",
+        "manual business ID generation outside central registry",
+        "exposing raw database PKs to end users"
+      ],
+      "reason": "Decouples internal DB identity from business identity. Allows renumbering and prefix changes without schema migration.",
+      "examples": {
+        "valid": [
+          "EMP-00001",
+          "INV-00045",
+          "ORD-10023",
+          "GRD-00312"
+        ],
+        "invalid": [
+          "1",
+          "45",
+          "10023"
+        ]
+      },
+      "tags": [
+        "identity",
+        "primary_key",
+        "business_id",
+        "unique_id_header_all"
+      ]
+    },
+    {
+      "rule_id": 3,
+      "category": "audit",
+      "rule_name": "Three-Layer Data Preservation",
+      "priority": "high",
+      "trigger_when": [
+        "designing any mutable entity",
+        "updating records that have business significance",
+        "any table where data can change after creation"
+      ],
+      "enforce": [
+        "Layer 1 - status field: soft delete/deactivate rather than hard delete",
+        "Layer 2 - old_* inline columns: store previous value before overwriting (e.g. old_mobile_no, old_salary)",
+        "Layer 3 - _archive_all table: full row snapshot copied to archive table on every significant change"
+      ],
+      "avoid": [
+        "hard DELETE statements on business-critical data",
+        "overwriting columns without preserving old value",
+        "relying on application logs as the only history"
+      ],
+      "reason": "Production systems need audit trails for compliance, dispute resolution, and debugging. Three layers cover different granularities.",
+      "tags": [
+        "audit",
+        "preservation",
+        "soft_delete",
+        "archive",
+        "old_prefix"
+      ]
+    },
+    {
+      "rule_id": 4,
+      "category": "workflow",
+      "rule_name": "Life Cycle Tracking",
+      "priority": "high",
+      "trigger_when": [
+        "multi-stage workflow entities",
+        "approval systems",
+        "status-driven entities with more than 2 states",
+        "entities where the history of state changes matters"
+      ],
+      "enforce": [
+        "create dedicated _life_cycle_all table for complex entities",
+        "store exact datetime for each status transition",
+        "store previous_status and new_status on each life cycle row",
+        "store who triggered the transition (employee_id or user_id)"
+      ],
+      "avoid": [
+        "single status column with no transition history",
+        "relying on modified_on timestamp to infer state history"
+      ],
+      "reason": "Compliance and dispute resolution require knowing not just current state but every state change and when it happened.",
+      "tags": [
+        "workflow",
+        "lifecycle",
+        "status_history",
+        "state_machine"
+      ]
+    },
+    {
+      "rule_id": 5,
+      "category": "architecture",
+      "rule_name": "Domain-Split Tables",
+      "priority": "high",
+      "trigger_when": [
+        "two entity types have different event structures",
+        "different business logic applies per type",
+        "different lifecycle or approval chains per type"
+      ],
+      "enforce": [
+        "create separate tables for fundamentally different business structures",
+        "do not force different domain entities into one table with a type column"
+      ],
+      "avoid": [
+        "single giant table with nullable columns for unrelated workflows",
+        "type-discriminated single table when structures diverge significantly"
+      ],
+      "reason": "Mixing domains in one table causes sparse nulls, confusing queries, and makes AI generation ambiguous.",
+      "tags": [
+        "architecture",
+        "domain_split",
+        "table_design",
+        "normalization"
+      ]
+    },
+    {
+      "rule_id": 6,
+      "category": "financial",
+      "rule_name": "Temporal Pricing System",
+      "priority": "high",
+      "trigger_when": [
+        "pricing modules",
+        "rate configurations",
+        "subscription plan systems",
+        "any price that can change over time"
+      ],
+      "enforce": [
+        "applied_from date/datetime column on every rate record",
+        "valid_till or applicable_to date/datetime column",
+        "operational_status column to mark past / current / upcoming",
+        "never overwrite a rate row — insert a new row with new dates"
+      ],
+      "status_mapping": {
+        "0": "past",
+        "1": "current",
+        "2": "upcoming"
+      },
+      "avoid": [
+        "single rate column that gets updated in place",
+        "no history of what rate applied when"
+      ],
+      "reason": "Any financial dispute requires knowing which rate was active at the time of a transaction.",
+      "tags": [
+        "financial",
+        "temporal",
+        "pricing",
+        "rates",
+        "configuration"
+      ]
+    },
+    {
+      "rule_id": 7,
+      "category": "taxation",
+      "rule_name": "Indian GST Compliance",
+      "priority": "critical",
+      "trigger_when": [
+        "any invoice generation",
+        "any financial transaction in Indian market",
+        "tax calculation modules"
+      ],
+      "enforce": [
+        "separate sgst_amount column (State GST)",
+        "separate cgst_amount column (Central GST)",
+        "store both as DECIMAL, not computed-only",
+        "store percentage values separately: sgst_percentage, cgst_percentage"
+      ],
+      "avoid": [
+        "single combined tax_amount column",
+        "computing tax only at display time without storing breakdown"
+      ],
+      "reason": "Indian GST law requires SGST and CGST to be reported separately on every invoice. Merged tax columns are non-compliant.",
+      "tags": [
+        "taxation",
+        "GST",
+        "SGST",
+        "CGST",
+        "India",
+        "compliance",
+        "financial"
+      ]
+    },
+    {
+      "rule_id": 8,
+      "category": "convention",
+      "rule_name": "Status Integer Convention",
+      "priority": "medium",
+      "trigger_when": [
+        "creating any status column",
+        "creating any state column",
+        "designing approval flag columns"
+      ],
+      "enforce": [
+        "status fields must be integer type (tinyint or int)",
+        "every possible value must be documented inline in SQL COMMENT",
+        "comment format: '1=active, 2=inactive, 3=suspended, 4=deleted'"
+      ],
+      "avoid": [
+        "varchar status fields",
+        "undocumented integer status values",
+        "boolean for status with more than 2 possible states"
+      ],
+      "reason": "Integer status fields are indexed efficiently. Inline COMMENTs make the schema self-documenting without needing external docs.",
+      "tags": [
+        "convention",
+        "status",
+        "integer",
+        "comment",
+        "documentation"
+      ]
+    },
+    {
+      "rule_id": 9,
+      "category": "identity",
+      "rule_name": "Centralised ID Registry",
+      "priority": "critical",
+      "trigger_when": [
+        "any new business ID type is needed",
+        "generating prefixed sequential IDs",
+        "any table that requires a human-readable unique identifier"
+      ],
+      "enforce": [
+        "all business IDs generated from a single unique_id_header_all table",
+        "unique_id_header_all has one row per entity type with prefix + last_id + current_id",
+        "ID format: PREFIX-NNNNN (e.g. EMP-00001)",
+        "never generate IDs independently in application code"
+      ],
+      "avoid": [
+        "random UUID as default business ID",
+        "multiple independent ID generators for same entity type",
+        "application-side ID generation without DB coordination"
+      ],
+      "reason": "Centralised registry prevents duplicate business IDs across concurrent transactions and ensures sequential auditability.",
+      "tags": [
+        "identity",
+        "unique_id_header_all",
+        "registry",
+        "prefix",
+        "sequential"
+      ]
+    },
+    {
+      "rule_id": 10,
+      "category": "monitoring",
+      "rule_name": "Infrastructure Monitoring via Schema",
+      "priority": "medium",
+      "trigger_when": [
+        "high-volume transactional systems",
+        "tables that grow rapidly",
+        "critical systems where row-count matters"
+      ],
+      "enforce": [
+        "table_inside_table_all tracks row count limits per table",
+        "first_alert_on threshold column triggers notification",
+        "maximum_row_limit column triggers stop flag",
+        "is_stopable flag prevents further inserts when limit hit"
+      ],
+      "avoid": [
+        "relying solely on external monitoring tools for DB capacity",
+        "no capacity awareness in schema design"
+      ],
+      "reason": "DB self-monitors without needing external APM tools. Critical for shared hosting or limited-resource environments.",
+      "tags": [
+        "monitoring",
+        "capacity",
+        "table_inside_table_all",
+        "infrastructure"
+      ]
+    },
+    {
+      "rule_id": 11,
+      "category": "workflow",
+      "rule_name": "Flat Approval Chains",
+      "priority": "high",
+      "trigger_when": [
+        "any approval workflow",
+        "multi-level approval requirements",
+        "transaction requiring sign-off from multiple people"
+      ],
+      "enforce": [
+        "store approval_1 through approval_N inline on the transaction row itself",
+        "each approval_N column stores: approver_id + status + datetime as encoded string",
+        "fixed maximum approver count known at design time",
+        "approval status lives on same transaction row — no separate approval table for simple workflows"
+      ],
+      "avoid": [
+        "normalised approval step tables for simple linear workflows",
+        "dynamic approval chain tables when chain depth is fixed"
+      ],
+      "reason": "For fixed-depth approval chains, inline columns eliminate JOINs and make the approval state readable in one row.",
+      "tags": [
+        "workflow",
+        "approval",
+        "inline",
+        "flat_chain"
+      ]
+    },
+    {
+      "rule_id": 12,
+      "category": "validation",
+      "rule_name": "Schema-Enforced Workflow Gates",
+      "priority": "critical",
+      "trigger_when": [
+        "workflow state transitions",
+        "approval completion checks",
+        "any process where step B cannot happen without step A"
+      ],
+      "enforce": [
+        "use NOT NULL constraints to force required fields before progression",
+        "use CHECK constraints to enforce valid state combinations",
+        "document every constraint rule in column COMMENT",
+        "business rules encoded in schema, not only in application"
+      ],
+      "avoid": [
+        "business workflow logic only in frontend or application layer",
+        "no DB-level enforcement of workflow rules"
+      ],
+      "reason": "Application code can be bypassed. Schema constraints cannot. Critical workflow gates must be enforced at DB level.",
+      "tags": [
+        "validation",
+        "workflow_gates",
+        "constraints",
+        "enforcement"
+      ]
+    },
+    {
+      "rule_id": 13,
+      "category": "ui_architecture",
+      "rule_name": "Metadata-Driven UI",
+      "priority": "high",
+      "trigger_when": [
+        "dynamic form systems",
+        "admin-configurable UI",
+        "role-based form rendering",
+        "multi-tenant form customisation"
+      ],
+      "enforce": [
+        "form configuration table defines field name, type, compulsory flag, default value",
+        "field visibility controlled by DB rows, not hardcoded in frontend",
+        "field validation rules stored in DB columns",
+        "UI renders dynamically from DB config — changing form = data update not code deploy"
+      ],
+      "reason": "Eliminates code deployments for UI changes. Clients can self-configure forms without developer involvement.",
+      "tags": [
+        "ui_architecture",
+        "metadata_driven",
+        "dynamic_forms",
+        "configuration"
+      ]
+    },
+    {
+      "rule_id": 14,
+      "category": "architecture",
+      "rule_name": "Type-Flag Dual-Purpose Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "two related entity types share more than 80% column structure",
+        "same lifecycle applies to both types",
+        "entity type is a simple binary distinction"
+      ],
+      "enforce": [
+        "single table with type_flag column when structure overlap exceeds 80%",
+        "document type values in COMMENT: '1=employee, 2=guard'"
+      ],
+      "avoid": [
+        "separate tables when structure is nearly identical and lifecycle is identical",
+        "duplicate maintenance of two identical schemas"
+      ],
+      "reason": "When two entity types are structurally near-identical, splitting wastes schema real estate and duplicates maintenance.",
+      "tags": [
+        "architecture",
+        "type_flag",
+        "dual_purpose",
+        "table_design"
+      ]
+    },
+    {
+      "rule_id": 15,
+      "category": "documents",
+      "rule_name": "File and Document Management Pattern",
+      "priority": "high",
+      "trigger_when": [
+        "any file uploads",
+        "document attachments",
+        "image storage",
+        "PDF storage"
+      ],
+      "enforce": [
+        "store only file URL or path in DB — never binary file content",
+        "file_type or mime_type column always alongside the URL",
+        "uploaded_by tracking column",
+        "uploaded_on datetime column",
+        "cloud_path or storage_path column for bucket reference"
+      ],
+      "avoid": [
+        "storing binary BLOB data in primary entity tables",
+        "URL without accompanying type metadata"
+      ],
+      "reason": "Binary files in DB bloat storage and slow backups. URLs with type metadata are portable and cloud-storage ready.",
+      "tags": [
+        "documents",
+        "file_management",
+        "uploads",
+        "URL",
+        "mime_type"
+      ]
+    },
+    {
+      "rule_id": 16,
+      "category": "location",
+      "rule_name": "Geo Hierarchy Pattern",
+      "priority": "high",
+      "trigger_when": [
+        "district or state based data",
+        "village or taluka level data",
+        "property mapping",
+        "land acquisition",
+        "location-scoped entities"
+      ],
+      "enforce": [
+        "hierarchical location tables: country → state → district → city → area",
+        "parent_child relationships with FK between levels",
+        "geo_code or pin_code on each level",
+        "latitude and longitude on city/area level"
+      ],
+      "reason": "Geo hierarchies drive reporting aggregation and permission scoping. Flat address strings cannot be aggregated or filtered by region.",
+      "tags": [
+        "location",
+        "geo_hierarchy",
+        "district",
+        "state",
+        "latitude",
+        "longitude"
+      ]
+    },
+    {
+      "rule_id": 17,
+      "category": "convention",
+      "rule_name": "Status Encoding Choice",
+      "priority": "medium",
+      "trigger_when": [
+        "deciding how to encode a status or state column",
+        "any column with a fixed set of possible values"
+      ],
+      "enforce": [
+        "int + COMMENT when many states exist (5+) or ordering/comparison matters",
+        "abbreviated string + COMMENT when 2-5 states and human readability matters more",
+        "ENUM for 2-5 truly immutable value sets that will never expand",
+        "choose encoding deliberately based on cardinality and expansion likelihood"
+      ],
+      "avoid": [
+        "arbitrary choice of encoding type",
+        "ENUM when values may expand in future"
+      ],
+      "reason": "ENUM is cheap but painful to alter. Int is flexible but unreadable. String is readable but unindexed. Pick deliberately.",
+      "tags": [
+        "convention",
+        "status_encoding",
+        "enum",
+        "integer",
+        "varchar"
+      ]
+    },
+    {
+      "rule_id": 18,
+      "category": "audit",
+      "rule_name": "Comprehensive Audit Logging",
+      "priority": "high",
+      "trigger_when": [
+        "sensitive actions",
+        "admin systems",
+        "any data modification",
+        "financial operations",
+        "approval or rejection actions"
+      ],
+      "enforce": [
+        "created_by column: user_id or employee_id who created the record",
+        "updated_by column: user_id or employee_id who last modified",
+        "created_on datetime column",
+        "modified_on datetime column",
+        "ip_address logging for sensitive operations"
+      ],
+      "reason": "Audit columns answer: who did what and when. Essential for compliance, dispute resolution, and debugging.",
+      "tags": [
+        "audit",
+        "created_by",
+        "updated_by",
+        "created_on",
+        "modified_on",
+        "logging"
+      ]
+    },
+    {
+      "rule_id": 19,
+      "category": "configuration",
+      "rule_name": "Dynamic Configuration Pattern",
+      "priority": "medium",
+      "trigger_when": [
+        "admin-configurable business rules",
+        "dynamic settings",
+        "feature toggles per entity"
+      ],
+      "enforce": [
+        "configuration_all tables with effective dates",
+        "active flag column",
+        "version tracking via line_no",
+        "never hardcode configuration values in application code"
+      ],
+      "reason": "Dynamic configuration eliminates code deployments for business rule changes. Ops team controls behaviour via data.",
+      "tags": [
+        "configuration",
+        "dynamic",
+        "admin_configurable",
+        "version",
+        "effective_dates"
+      ]
+    },
+    {
+      "rule_id": 20,
+      "category": "data_management",
+      "rule_name": "Soft Delete Pattern",
+      "priority": "high",
+      "trigger_when": [
+        "any business-critical entity that can be deactivated or removed",
+        "records that may need to be restored"
+      ],
+      "enforce": [
+        "status-based soft deletion: set status = inactive/deleted, never DELETE row",
+        "deleted_on datetime column: timestamp of deletion",
+        "deleted_by column: who performed the deletion"
+      ],
+      "avoid": [
+        "hard DELETE queries on business entities",
+        "no way to recover deleted records"
+      ],
+      "reason": "Hard deletes are irreversible. Soft deletes allow restoration, audit, and cross-reference integrity.",
+      "tags": [
+        "data_management",
+        "soft_delete",
+        "status",
+        "recovery",
+        "audit"
+      ]
+    },
+    {
+      "rule_id": 24,
+      "category": "versioning",
+      "rule_name": "line_no for Record Versioning",
+      "priority": "high",
+      "trigger_when": [
+        "settings that can change over time",
+        "versioned records within same entity",
+        "config or rate tables with history"
+      ],
+      "enforce": [
+        "line_no=0 for master/summary row",
+        "line_no 1, 2, 3... for successive versions or detail rows",
+        "MAX(line_no) within a group = current active version",
+        "older line_no rows become historical record"
+      ],
+      "reason": "Enables in-table versioning without separate history tables for moderate-change-frequency entities.",
+      "tags": [
+        "versioning",
+        "line_no",
+        "history",
+        "configuration"
+      ]
+    },
+    {
+      "rule_id": 25,
+      "category": "architecture",
+      "rule_name": "Domain-Specific Tables for Shared Structure",
+      "priority": "medium",
+      "trigger_when": [
+        "entities share column structure but belong to different domains",
+        "same columns but different lifecycle, ownership, or business meaning"
+      ],
+      "enforce": [
+        "create separate tables per domain even when column list is nearly identical",
+        "domain ownership takes priority over DRY (Don't Repeat Yourself) principle"
+      ],
+      "reason": "Different domains diverge over time. Sharing tables forces coupling that becomes painful at schema revision time.",
+      "tags": [
+        "architecture",
+        "domain_split",
+        "ownership",
+        "decoupling"
+      ]
+    },
+    {
+      "rule_id": 26,
+      "category": "architecture",
+      "rule_name": "Domain-Justified Wide Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "fixed known-depth domain structures",
+        "data is always queried and updated as a complete unit",
+        "normalising would create a JOIN-heavy read with no benefit"
+      ],
+      "enforce": [
+        "flatten fixed-depth hierarchy inline when always retrieved together",
+        "shift1_name, shift1_start, shift1_end, shift2_name, shift2_start... pattern is valid"
+      ],
+      "avoid": [
+        "normalising into child rows when entity is always read/written as one unit"
+      ],
+      "reason": "Normalisation has a JOIN cost. When the full structure is always needed, denormalisation is the correct engineering choice.",
+      "tags": [
+        "architecture",
+        "wide_tables",
+        "denormalisation",
+        "fixed_depth"
+      ]
+    },
+    {
+      "rule_id": 27,
+      "category": "financial",
+      "rule_name": "Denormalised Running Balance",
+      "priority": "high",
+      "trigger_when": [
+        "wallet systems",
+        "account balance tracking",
+        "any entity with a running financial balance"
+      ],
+      "enforce": [
+        "closing_balance column on every transaction row — updated at write time",
+        "current_wallet_bal column on the entity (wallet owner) row",
+        "full transaction history table alongside the balance columns"
+      ],
+      "avoid": [
+        "computing balance with SUM() at read time for operational queries",
+        "no balance column — balance only derivable via aggregation"
+      ],
+      "reason": "SUM() on large transaction tables is slow and inconsistent under concurrent writes. Stored balance is O(1) read.",
+      "tags": [
+        "financial",
+        "wallet",
+        "balance",
+        "running_balance",
+        "closing_balance"
+      ]
+    },
+    {
+      "rule_id": 29,
+      "category": "financial",
+      "rule_name": "Decimal Money Fields",
+      "priority": "critical",
+      "trigger_when": [
+        "any column storing a monetary amount",
+        "any column storing a price, fee, charge, tax, or discount"
+      ],
+      "enforce": [
+        "use DECIMAL(10,2) for amounts up to 99,999,999.99",
+        "use DECIMAL(12,2) for large amounts (property prices, enterprise billing)",
+        "never use float or double for monetary values"
+      ],
+      "avoid": [
+        "float for money — IEEE 754 floating point has rounding errors",
+        "double for money — same rounding issue as float"
+      ],
+      "reason": "Float/double rounding errors accumulate in financial calculations. A 0.001 error per transaction becomes thousands in aggregate.",
+      "tags": [
+        "financial",
+        "decimal",
+        "money",
+        "precision",
+        "data_type"
+      ]
+    },
+    {
+      "rule_id": 30,
+      "category": "naming",
+      "rule_name": "Timestamp Column Naming",
+      "priority": "high",
+      "trigger_when": [
+        "any table needing creation or modification tracking",
+        "adding audit timestamp columns"
+      ],
+      "enforce": [
+        "creation timestamp column must be named: created_on (datetime)",
+        "modification timestamp column must be named: modified_on (datetime)",
+        "apply consistently across ALL tables in the schema"
+      ],
+      "avoid": [
+        "created_at / updated_at (Laravel convention — only in framework tables)",
+        "insert_date, last_modified, timestamp — inconsistent naming"
+      ],
+      "reason": "Consistent timestamp naming allows universal tooling and queries across all tables without inspecting each schema.",
+      "tags": [
+        "naming",
+        "timestamps",
+        "created_on",
+        "modified_on",
+        "audit"
+      ]
+    },
+    {
+      "rule_id": 31,
+      "category": "constraints",
+      "rule_name": "Named FK Constraints",
+      "priority": "high",
+      "trigger_when": [
+        "adding any foreign key constraint",
+        "defining relationships between tables"
+      ],
+      "enforce": [
+        "all FK constraints must have explicit names using fk_ prefix",
+        "naming pattern: fk_childtable_parenttable or fk_column"
+      ],
+      "avoid": [
+        "anonymous constraint names — database assigns random names making migration painful"
+      ],
+      "reason": "Named FKs make migration scripts, error messages, and schema documentation readable and refactorable.",
+      "tags": [
+        "constraints",
+        "foreign_key",
+        "naming",
+        "fk_prefix"
+      ]
+    },
+    {
+      "rule_id": 32,
+      "category": "constraints",
+      "rule_name": "Named Indexes",
+      "priority": "high",
+      "trigger_when": [
+        "adding any database index",
+        "optimising query performance"
+      ],
+      "enforce": [
+        "all indexes must have explicit names using idx_ prefix",
+        "naming pattern: idx_tablename_columns (e.g. idx_employee_agency_id)"
+      ],
+      "avoid": [
+        "anonymous index names",
+        "relying on ORM to auto-name indexes"
+      ],
+      "reason": "Named indexes make EXPLAIN output readable and index management scriptable.",
+      "tags": [
+        "constraints",
+        "indexes",
+        "naming",
+        "idx_prefix",
+        "performance"
+      ]
+    },
+    {
+      "rule_id": 33,
+      "category": "constraints",
+      "rule_name": "Composite Indexes Follow Query Patterns",
+      "priority": "medium",
+      "trigger_when": [
+        "high-query tables",
+        "search-heavy operations",
+        "tables queried by multiple columns simultaneously"
+      ],
+      "enforce": [
+        "composite indexes built on actual production query WHERE clause patterns",
+        "column order in composite index matches query filter priority (most selective first)",
+        "validate index design with EXPLAIN before finalising"
+      ],
+      "reason": "Wrong column order in composite index makes it useless. Index design must be driven by real query patterns.",
+      "tags": [
+        "constraints",
+        "composite_index",
+        "query_pattern",
+        "performance"
+      ]
+    },
+    {
+      "rule_id": 34,
+      "category": "infrastructure",
+      "rule_name": "System Singleton Configuration (factory_reset Pattern)",
+      "priority": "high",
+      "trigger_when": [
+        "global feature flags needed",
+        "platform-wide on/off switches",
+        "emergency kill switches for the application"
+      ],
+      "enforce": [
+        "factory_reset_all table with exactly one data row",
+        "each feature flag is a typed column (web_status, reg_status, login_status)",
+        "column values: 1=on, 0=off with COMMENT documentation"
+      ],
+      "reason": "Single-row configuration table allows instant platform-wide feature toggling without code deployment.",
+      "tags": [
+        "infrastructure",
+        "singleton",
+        "factory_reset_all",
+        "feature_flags",
+        "configuration"
+      ]
+    },
+    {
+      "rule_id": 35,
+      "category": "security",
+      "rule_name": "OTP Rate Limiting via Schema",
+      "priority": "high",
+      "trigger_when": [
+        "OTP generation and verification systems",
+        "SMS or email verification flows",
+        "any time-limited verification code"
+      ],
+      "enforce": [
+        "otp_attempt_count column: counts wrong OTP entries",
+        "otp_sent_count column: counts how many OTPs were resent",
+        "blocked_till datetime column: automatic unblock when timestamp passes",
+        "expires_at datetime column: OTP expiry separate from block expiry"
+      ],
+      "avoid": [
+        "is_blocked boolean flag — requires manual unblock",
+        "relying only on application-layer rate limiting"
+      ],
+      "reason": "DB-level rate limiting persists across server restarts and cannot be bypassed by direct API calls.",
+      "tags": [
+        "security",
+        "OTP",
+        "rate_limiting",
+        "blocked_till",
+        "verification"
+      ]
+    },
+    {
+      "rule_id": 36,
+      "category": "naming",
+      "rule_name": "Prefixed Column Naming for JOIN-Heavy Schemas",
+      "priority": "medium",
+      "trigger_when": [
+        "schemas with many JOINs across tables",
+        "tables that share common column names (id, name, status, mobile_no)",
+        "complex reporting queries spanning multiple tables"
+      ],
+      "enforce": [
+        "prefix all columns with abbreviated table identifier (emp_id, bha_name, pld_status)",
+        "eliminates column name collisions in multi-table JOINs without aliasing"
+      ],
+      "reason": "Prefixed columns make JOINs self-documenting and eliminate ambiguous column name errors in complex queries.",
+      "tags": [
+        "naming",
+        "column_prefix",
+        "join",
+        "disambiguation"
+      ]
+    },
+    {
+      "rule_id": 37,
+      "category": "identity",
+      "rule_name": "bigint for High-Volume Transaction PKs",
+      "priority": "medium",
+      "trigger_when": [
+        "tables expected to exceed 2 billion rows",
+        "IoT event tables",
+        "high-frequency transaction logging tables"
+      ],
+      "enforce": [
+        "use bigint for PKs on tables with projected row count > 2 billion",
+        "use int for entity/master tables (employees, products, agencies)"
+      ],
+      "reason": "int PK maxes at ~2.1 billion. IoT and high-frequency tables can hit this in 1-2 years. bigint adds no meaningful overhead.",
+      "tags": [
+        "identity",
+        "bigint",
+        "primary_key",
+        "high_volume",
+        "IoT"
+      ]
+    },
+    {
+      "rule_id": 38,
+      "category": "performance",
+      "rule_name": "Aggregate Counters on Parent Rows",
+      "priority": "high",
+      "trigger_when": [
+        "operational dashboards showing counts",
+        "entity summary statistics",
+        "any count displayed in real-time UI"
+      ],
+      "enforce": [
+        "maintain count columns on parent entity row (no_of_guards, pending_count, active_branch)",
+        "increment/decrement counter at write time when child records change",
+        "count column is always consistent — never stale"
+      ],
+      "avoid": [
+        "SELECT COUNT(*) at read time for operational counts displayed in UI",
+        "computing aggregates on large child tables during user-facing requests"
+      ],
+      "reason": "COUNT() on millions of rows is slow. Stored counters are O(1). The slight write overhead is always worth the read performance gain.",
+      "tags": [
+        "performance",
+        "counters",
+        "aggregates",
+        "denormalisation",
+        "real_time"
+      ]
+    },
+    {
+      "rule_id": 39,
+      "category": "architecture",
+      "rule_name": "Snapshot + Event Log Dual Table",
+      "priority": "high",
+      "trigger_when": [
+        "entities that have both a current state and a history of events",
+        "any entity where both snapshot and timeline matter"
+      ],
+      "enforce": [
+        "_header_all table stores current state snapshot (always fresh, one row per entity)",
+        "_transaction_all table stores all events chronologically (append-only)"
+      ],
+      "reason": "Snapshot enables O(1) current state reads. Event log enables full audit and timeline reconstruction. Both are needed.",
+      "tags": [
+        "architecture",
+        "snapshot",
+        "event_log",
+        "dual_table",
+        "audit"
+      ]
+    },
+    {
+      "rule_id": 40,
+      "category": "architecture",
+      "rule_name": "Resume Pointer on Session Entities",
+      "priority": "medium",
+      "trigger_when": [
+        "session-based entities (exams, interviews, multi-step forms)",
+        "workflows that can be interrupted and resumed"
+      ],
+      "enforce": [
+        "last_transaction_id or last_ple_id column on session row",
+        "points to the last completed transaction in the session",
+        "enables instant recovery to last known state without full table scan"
+      ],
+      "reason": "Network drops, app crashes, and browser closes happen. Resume pointers allow seamless continuation without data loss.",
+      "tags": [
+        "architecture",
+        "session",
+        "resume",
+        "recovery",
+        "pointer"
+      ]
+    },
+    {
+      "rule_id": 41,
+      "category": "convention",
+      "rule_name": "Multi-Language Inline Columns",
+      "priority": "medium",
+      "trigger_when": [
+        "fixed language set of 2-3 languages",
+        "bilingual content (English + Hindi)",
+        "content that must display in multiple languages"
+      ],
+      "enforce": [
+        "separate column per language: que_description_eng, que_description_hindi",
+        "use this pattern for fixed, small language sets only"
+      ],
+      "avoid": [
+        "separate language translation table for fixed 2-language systems — JOIN overhead not justified"
+      ],
+      "reason": "For fixed 2-3 language systems, inline columns are simpler, faster, and easier to manage than translation tables.",
+      "tags": [
+        "convention",
+        "multilanguage",
+        "inline_columns",
+        "localisation"
+      ]
+    },
+    {
+      "rule_id": 43,
+      "category": "audit",
+      "rule_name": "Deactivation Timestamp Column",
+      "priority": "medium",
+      "trigger_when": [
+        "any entity that can be deactivated or suspended",
+        "entities where knowing when they were deactivated matters"
+      ],
+      "enforce": [
+        "dedicated deactivated_on datetime column alongside status field",
+        "NULL until entity is deactivated, then set once and never changed"
+      ],
+      "avoid": [
+        "relying on modified_on to determine deactivation time (modified_on changes for other reasons too)"
+      ],
+      "reason": "status=inactive tells you the current state. deactivated_on tells you exactly when. Both are needed for SLA and compliance.",
+      "tags": [
+        "audit",
+        "deactivation",
+        "timestamp",
+        "status"
+      ]
+    },
+    {
+      "rule_id": 44,
+      "category": "architecture",
+      "rule_name": "Three-Tier Settings Cascade",
+      "priority": "high",
+      "trigger_when": [
+        "multi-tenant platform with overridable settings",
+        "platform → entity → sub-entity configuration hierarchy"
+      ],
+      "enforce": [
+        "platform-level defaults in factory_reset_all or platform_settings_all",
+        "entity-level overrides in entity_setting_all (overrides platform defaults)",
+        "sub-entity-level overrides in sub_entity_setting_all (overrides entity settings)",
+        "each tier can independently override the tier above"
+      ],
+      "reason": "Multi-tenant SaaS needs global defaults with per-client and per-location overrides. Three tiers covers virtually all cases.",
+      "tags": [
+        "architecture",
+        "settings_cascade",
+        "multi_tenant",
+        "configuration",
+        "override"
+      ]
+    },
+    {
+      "rule_id": 45,
+      "category": "architecture",
+      "rule_name": "Temp-to-Permanent Promotion",
+      "priority": "high",
+      "trigger_when": [
+        "multi-step registration workflows",
+        "approval-gated entity creation",
+        "any entity that goes through an in-flight phase before becoming permanent"
+      ],
+      "enforce": [
+        "in-flight records stored in _temp_ table during creation process",
+        "approved/completed records promoted to _header_all table",
+        "failed/rejected records moved to _failed_all or _rejected_all table"
+      ],
+      "reason": "Keeps production entity tables clean. Temp table can be purged. Failed table provides analytics on drop-off.",
+      "tags": [
+        "architecture",
+        "temp_promotion",
+        "workflow",
+        "staging",
+        "approval"
+      ]
+    },
+    {
+      "rule_id": 47,
+      "category": "architecture",
+      "rule_name": "Hub + Spoke Document Architecture",
+      "priority": "high",
+      "trigger_when": [
+        "multiple document or ID types for one entity (Aadhar, PAN, DL, Passport)",
+        "verification hub with multiple verification type spokes"
+      ],
+      "enforce": [
+        "hub table has linked_table column (varchar storing spoke table name)",
+        "hub tracks status, timestamps, and which spoke holds the data",
+        "each document/ID type gets its own spoke table with full structure",
+        "hub + spoke enables adding new document types without hub schema change"
+      ],
+      "reason": "Different ID types have completely different fields. Forcing them into one table creates massive sparse nulls.",
+      "tags": [
+        "architecture",
+        "hub_spoke",
+        "documents",
+        "verification",
+        "extensible"
+      ]
+    },
+    {
+      "rule_id": 48,
+      "category": "architecture",
+      "rule_name": "Parallel edited_* Correction Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "data correction workflows where original must be preserved",
+        "OCR-then-correct workflows",
+        "any system where human correction of system-generated data is needed"
+      ],
+      "enforce": [
+        "edited_* table mirrors primary table structure exactly",
+        "original data preserved in primary table",
+        "corrections stored in edited_* table with same primary key reference"
+      ],
+      "reason": "Preserves audit trail of both what the system captured and what the human corrected it to.",
+      "tags": [
+        "architecture",
+        "correction",
+        "edited_prefix",
+        "OCR",
+        "audit"
+      ]
+    },
+    {
+      "rule_id": 49,
+      "category": "architecture",
+      "rule_name": "Cross-Entity Identity Ledger",
+      "priority": "medium",
+      "trigger_when": [
+        "one identity (mobile number, email) appears across multiple business entities",
+        "need to see all interactions for a person regardless of which entity they interacted with"
+      ],
+      "enforce": [
+        "line_no=0 master row for the identity (mobile, name, email)",
+        "line_no 1+ rows for each entity interaction (visit, transaction, application)",
+        "single lookup by identity gives complete cross-entity history"
+      ],
+      "reason": "A mobile number can belong to a visitor, a guard, and an employee. Identity ledger unifies them without merging entity tables.",
+      "tags": [
+        "architecture",
+        "identity_ledger",
+        "cross_entity",
+        "mobile_number",
+        "history"
+      ]
+    },
+    {
+      "rule_id": 50,
+      "category": "operations",
+      "rule_name": "API Failover Logic in Schema",
+      "priority": "medium",
+      "trigger_when": [
+        "multiple third-party API providers for same service",
+        "API reliability tracking needed",
+        "automatic failover between providers required"
+      ],
+      "enforce": [
+        "priority column on service_provider_api table (lower = try first)",
+        "failed_cycle counter: increments every N consecutive failures",
+        "alert triggered when failed_cycle reaches multiple of threshold",
+        "last_failed_on and last_successed_on datetime columns"
+      ],
+      "reason": "API providers go down. Schema-level failover logic ensures the application automatically routes to next provider.",
+      "tags": [
+        "operations",
+        "API",
+        "failover",
+        "service_provider",
+        "reliability"
+      ]
+    },
+    {
+      "rule_id": 51,
+      "category": "financial",
+      "rule_name": "Failed Transactions in Separate Table",
+      "priority": "high",
+      "trigger_when": [
+        "payment processing",
+        "any financial transaction that can fail",
+        "OTP or API call that has a failed outcome"
+      ],
+      "enforce": [
+        "failed transactions stored in dedicated _failed_all table",
+        "successful transactions in main _transaction_all table",
+        "never mix failed and successful records in same table"
+      ],
+      "reason": "Failed transaction analysis requires different querying and retention than successful ones. Separation keeps main tables clean.",
+      "tags": [
+        "financial",
+        "failed_transactions",
+        "separation",
+        "payment"
+      ]
+    },
+    {
+      "rule_id": 52,
+      "category": "operations",
+      "rule_name": "DB-Backed Async Job Queue",
+      "priority": "high",
+      "trigger_when": [
+        "email sending pipelines",
+        "SMS sending pipelines",
+        "WhatsApp notification pipelines",
+        "any async communication that needs guaranteed delivery"
+      ],
+      "enforce": [
+        "communication table acts as queue AND delivery log AND audit trail simultaneously",
+        "retry_count and max_retry columns for automatic retry logic",
+        "next_retry_at datetime for scheduled retry",
+        "status column: pending → processing → sent → delivered → failed"
+      ],
+      "reason": "A DB queue never loses messages on server restart. Every message has a full delivery audit trail.",
+      "tags": [
+        "operations",
+        "queue",
+        "async",
+        "email",
+        "SMS",
+        "WhatsApp",
+        "retry"
+      ]
+    },
+    {
+      "rule_id": 53,
+      "category": "operations",
+      "rule_name": "Ambiguity as First-Class Entity",
+      "priority": "high",
+      "trigger_when": [
+        "identity verification systems",
+        "data mismatch detection",
+        "any system where mismatched data must be reviewed by a human"
+      ],
+      "enforce": [
+        "ambiguity_header_all table with its own full lifecycle (pending/approved/denied)",
+        "ambiguity_percentage column to quantify mismatch severity",
+        "ambiguity_found column to specify which fields mismatched",
+        "linked to alert, refund, and resolution workflows"
+      ],
+      "reason": "Ambiguity is not just an error state — it is a business event requiring human review, refund eligibility, and audit trail.",
+      "tags": [
+        "operations",
+        "ambiguity",
+        "verification",
+        "identity",
+        "mismatch"
+      ]
+    },
+    {
+      "rule_id": 54,
+      "category": "calendar",
+      "rule_name": "Monthly Calendar Table Pattern",
+      "priority": "high",
+      "trigger_when": [
+        "monthly tracking tables",
+        "attendance systems",
+        "guard duty scheduling",
+        "monthly movement logs",
+        "any data that is accessed by month"
+      ],
+      "enforce": [
+        "month_year key column in format MM-YYYY or YYYY-MM",
+        "one column per day: day_1 through day_31 (or 1_day through 31_day)",
+        "line_no=0 for summary/master row; line_no 1+ for detail rows",
+        "NULL for days that don't exist in shorter months"
+      ],
+      "reason": "Monthly calendar tables give O(1) access to any day's data. No date-range queries, no partitioning complexity.",
+      "tags": [
+        "calendar",
+        "monthly",
+        "numbered_columns",
+        "attendance",
+        "scheduling"
+      ]
+    },
+    {
+      "rule_id": 56,
+      "category": "convention",
+      "rule_name": "Status Type Selection Matrix",
+      "priority": "medium",
+      "trigger_when": [
+        "choosing between ENUM, int, or varchar for status columns"
+      ],
+      "enforce": [
+        "ENUM: use for 2-5 immutable values that will never expand (Active/Inactive)",
+        "int + COMMENT: use for 5+ states, or states that may expand, or where ordering matters",
+        "varchar + COMMENT: use when values are codes humans need to read (Y/N, SO/CF/N)"
+      ],
+      "reason": "Each encoding type has trade-offs. The selection must be intentional, not accidental.",
+      "tags": [
+        "convention",
+        "enum",
+        "status",
+        "data_type",
+        "selection"
+      ]
+    },
+    {
+      "rule_id": 57,
+      "category": "financial",
+      "rule_name": "Pre-Computed Analytics at Write Time",
+      "priority": "high",
+      "trigger_when": [
+        "analytics columns",
+        "day-over-day or period-over-period comparisons",
+        "dashboard summary metrics"
+      ],
+      "enforce": [
+        "store data_N (raw value) and diff_N (change from previous) columns side-by-side",
+        "compute diffs at INSERT time using previous row value",
+        "never compute diffs at read time on production tables"
+      ],
+      "reason": "Read-time diff computation on large analytics tables is slow. Stored diffs make dashboard queries instant.",
+      "tags": [
+        "financial",
+        "analytics",
+        "pre_computed",
+        "diff",
+        "write_time"
+      ]
+    },
+    {
+      "rule_id": 58,
+      "category": "calendar",
+      "rule_name": "Named vs Numbered Day Columns",
+      "priority": "medium",
+      "trigger_when": [
+        "weekly recurring data (day of week)",
+        "monthly date-specific data (date of month)"
+      ],
+      "enforce": [
+        "named columns (monday, tuesday, wednesday...) for day-of-week recurring weekly data",
+        "numbered columns (day_1, day_2... day_31) for date-of-month positional data"
+      ],
+      "reason": "Named columns self-document weekly patterns. Numbered columns map directly to calendar date. Mixing them creates confusion.",
+      "tags": [
+        "calendar",
+        "day_columns",
+        "weekly",
+        "monthly",
+        "naming"
+      ]
+    },
+    {
+      "rule_id": 60,
+      "category": "temporal",
+      "rule_name": "Date-Bounded Configuration Records",
+      "priority": "medium",
+      "trigger_when": [
+        "configuration that changes infrequently but must have history",
+        "settings that have effective date ranges"
+      ],
+      "enforce": [
+        "from_date and to_date columns on every config record",
+        "new record inserted for each change; old record's to_date is closed",
+        "WHERE NOW() BETWEEN from_date AND to_date gives current active config"
+      ],
+      "reason": "Point-in-time queries on configuration are essential for accurate historical transaction recreation.",
+      "tags": [
+        "temporal",
+        "date_bounded",
+        "configuration",
+        "effective_dates"
+      ]
+    },
+    {
+      "rule_id": 65,
+      "category": "architecture",
+      "rule_name": "Portable Schema Modules",
+      "priority": "medium",
+      "trigger_when": [
+        "building reusable features across multiple products",
+        "schema component that will be used in 2+ different databases"
+      ],
+      "enforce": [
+        "group 3-5 related tables into a self-contained module",
+        "module should function independently when dropped into any schema",
+        "document module dependencies clearly"
+      ],
+      "reason": "Portable modules reduce development time for new products that share features (e.g. wallet module reused across 5 apps).",
+      "tags": [
+        "architecture",
+        "modules",
+        "portable",
+        "reusable",
+        "schema_design"
+      ]
+    },
+    {
+      "rule_id": 67,
+      "category": "temporal",
+      "rule_name": "Reporting Period Pre-Tagged at Insert",
+      "priority": "medium",
+      "trigger_when": [
+        "transactional tables used for period-based reporting",
+        "any table queried frequently by month/year"
+      ],
+      "enforce": [
+        "month_year column on every transaction row, set at INSERT time",
+        "format: MM-YYYY (e.g. '03-2025')",
+        "enables instant period filtering: WHERE month_year = '03-2025'"
+      ],
+      "avoid": [
+        "extracting month/year from datetime column at query time on large tables"
+      ],
+      "reason": "Pre-tagged month_year avoids function-based filtering that prevents index use. Makes monthly reporting instant.",
+      "tags": [
+        "temporal",
+        "reporting",
+        "month_year",
+        "pre_tagged",
+        "performance"
+      ]
+    },
+    {
+      "rule_id": 69,
+      "category": "architecture",
+      "rule_name": "Bidirectional Hierarchy on Entity Row",
+      "priority": "medium",
+      "trigger_when": [
+        "org chart hierarchies",
+        "reporting structures",
+        "supervisor-subordinate relationships"
+      ],
+      "enforce": [
+        "reporting_to column (FK) for upward traversal — who does this person report to",
+        "jr_emp_ids column (CSV of IDs) for downward traversal — who reports to this person",
+        "both on same entity row for O(1) hierarchy access in either direction"
+      ],
+      "reason": "Self-referencing hierarchy with adjacency only requires recursive CTE for downward traversal. CSV shortcut avoids it.",
+      "tags": [
+        "architecture",
+        "hierarchy",
+        "org_chart",
+        "bidirectional",
+        "adjacency"
+      ]
+    },
+    {
+      "rule_id": 70,
+      "category": "convention",
+      "rule_name": "Optional Fields as NULL",
+      "priority": "high",
+      "trigger_when": [
+        "any column that may not always have a value",
+        "conditional columns that depend on business rules"
+      ],
+      "enforce": [
+        "optional fields must be DEFAULT NULL",
+        "absence of value = NULL, not empty string",
+        "never use NOT NULL with DEFAULT '' for truly optional fields"
+      ],
+      "avoid": [
+        "NOT NULL DEFAULT '' — makes it impossible to distinguish 'not provided' from 'provided as empty'",
+        "using 0 or '0' as sentinel for absence of value"
+      ],
+      "reason": "NULL semantics carry meaning. Empty string means 'provided but empty'. NULL means 'not provided'. They are not the same.",
+      "tags": [
+        "convention",
+        "NULL",
+        "optional_fields",
+        "default_value"
+      ]
+    },
+    {
+      "rule_id": 71,
+      "category": "architecture",
+      "rule_name": "Hierarchy Encoding Choice",
+      "priority": "medium",
+      "trigger_when": [
+        "hierarchical data (org charts, category trees, location hierarchies)",
+        "tree-structured data of unknown or variable depth"
+      ],
+      "enforce": [
+        "variable-depth hierarchy: self-referencing adjacency list with parent_id FK",
+        "fixed-depth hierarchy (e.g. always 3 levels): inline level columns (level1_id, level2_id, level3_id)"
+      ],
+      "reason": "Variable depth requires adjacency list. Fixed depth with inline columns avoids recursive queries entirely.",
+      "tags": [
+        "architecture",
+        "hierarchy",
+        "adjacency_list",
+        "self_referencing",
+        "tree"
+      ]
+    },
+    {
+      "rule_id": 72,
+      "category": "constraints",
+      "rule_name": "Circular FKs Acceptable for Bidirectional Relations",
+      "priority": "low",
+      "trigger_when": [
+        "genuinely bidirectional business relationships",
+        "two tables that legitimately reference each other"
+      ],
+      "enforce": [
+        "circular FK constraints are acceptable when the business relationship is genuinely bidirectional",
+        "document circular dependency clearly in schema comments"
+      ],
+      "avoid": [
+        "forcing artificial hierarchy to avoid circular references when the business domain is circular"
+      ],
+      "reason": "Some business relationships are genuinely bidirectional. Forcing them into a hierarchy creates false modelling.",
+      "tags": [
+        "constraints",
+        "circular_fk",
+        "bidirectional",
+        "schema_design"
+      ]
+    },
+    {
+      "rule_id": 73,
+      "category": "domain",
+      "rule_name": "Use Domain's Native Coordinate System",
+      "priority": "medium",
+      "trigger_when": [
+        "domain-specific spatial data (road engineering, biometrics, GIS)",
+        "data with an established domain measurement system"
+      ],
+      "enforce": [
+        "use domain's native coordinate system as primary (chainage for roads, alpha/beta/gamma for biometrics)",
+        "GPS coordinates as supplementary when domain has its own native system"
+      ],
+      "reason": "Domain experts use domain coordinates. GPS-only schema forces constant conversion that introduces errors.",
+      "tags": [
+        "domain",
+        "coordinates",
+        "spatial",
+        "biometrics",
+        "engineering"
+      ]
+    },
+    {
+      "rule_id": 74,
+      "category": "domain",
+      "rule_name": "Parallel Phase Statuses on Parent Entity",
+      "priority": "medium",
+      "trigger_when": [
+        "multi-phase processes where each phase is independent",
+        "competition rounds, project phases, registration stages"
+      ],
+      "enforce": [
+        "reg_phase_1, reg_phase_2, reg_phase_3 as independent tinyint columns on parent row",
+        "each phase is a separate boolean: cleared (1) or not cleared (0)",
+        "phases do not automatically cascade — each is independently set"
+      ],
+      "reason": "Phases are not sequential status — a participant can clear phase 1 and fail phase 2 and later pass phase 3 independently.",
+      "tags": [
+        "domain",
+        "parallel_phases",
+        "competition",
+        "registration",
+        "independence"
+      ]
+    },
+    {
+      "rule_id": 75,
+      "category": "domain",
+      "rule_name": "Immutability Flags Declared in Schema",
+      "priority": "medium",
+      "trigger_when": [
+        "records that become immutable after a specific event (approval, payment)",
+        "locked records where editing is prohibited"
+      ],
+      "enforce": [
+        "is_locked or lock_upload column (tinyint) on the entity",
+        "COMMENT explains lock condition: '1=locked after payment confirmed'",
+        "application checks flag before allowing any UPDATE"
+      ],
+      "reason": "Immutability intent expressed in schema prevents future developers from accidentally allowing edits.",
+      "tags": [
+        "domain",
+        "immutability",
+        "lock",
+        "flag",
+        "schema_intent"
+      ]
+    },
+    {
+      "rule_id": 76,
+      "category": "domain",
+      "rule_name": "Geospatially Scoped Permission Control",
+      "priority": "medium",
+      "trigger_when": [
+        "location-bounded access control",
+        "geographic permission scoping",
+        "road/pipeline/infrastructure segmented permissions"
+      ],
+      "enforce": [
+        "from_km/to_km or from_latitude/to_latitude columns on permission records",
+        "access control inherently tied to geographic range",
+        "spatial scope is part of the permission record, not a separate geo table"
+      ],
+      "reason": "Geographic access control for linear infrastructure (roads, pipelines) is range-based, not point-based.",
+      "tags": [
+        "domain",
+        "geospatial",
+        "permissions",
+        "access_control",
+        "range"
+      ]
+    },
+    {
+      "rule_id": 77,
+      "category": "constraints",
+      "rule_name": "UNIQUE Constraint on Business IDs",
+      "priority": "high",
+      "trigger_when": [
+        "business ID columns that must be globally unique",
+        "high-cardinality identifier columns"
+      ],
+      "enforce": [
+        "ADD UNIQUE KEY on business ID columns (employee_id, invoice_no, order_id)",
+        "enforced at DB level via UNIQUE constraint, not only application layer"
+      ],
+      "reason": "Application-layer uniqueness checks have a race condition window. DB-level UNIQUE constraint is atomic.",
+      "tags": [
+        "constraints",
+        "unique",
+        "business_id",
+        "integrity"
+      ]
+    },
+    {
+      "rule_id": 78,
+      "category": "convention",
+      "rule_name": "Column Order Encodes Temporal Sequence",
+      "priority": "low",
+      "trigger_when": [
+        "workflow tables with sequential status columns",
+        "tables documenting a process with a defined order"
+      ],
+      "enforce": [
+        "arrange columns left-to-right in temporal order of the workflow",
+        "requested_on → approved_on → permitted_on → completed_on"
+      ],
+      "reason": "Column order in DDL narrates the workflow. A developer reading the CREATE TABLE immediately understands the process flow.",
+      "tags": [
+        "convention",
+        "column_order",
+        "temporal_sequence",
+        "workflow",
+        "documentation"
+      ]
+    },
+    {
+      "rule_id": 79,
+      "category": "domain",
+      "rule_name": "Granular Integer Status for Complex Domain State Machines",
+      "priority": "medium",
+      "trigger_when": [
+        "complex domain workflows with many states",
+        "maintenance job status tracking",
+        "compliance or regulatory state machines"
+      ],
+      "enforce": [
+        "use 5-15 granular integer states for complex domain state machines",
+        "document every state value in column COMMENT",
+        "do not collapse multiple distinct states into fewer coarse states"
+      ],
+      "reason": "Coarse status loses operational nuance. Granular states enable precise querying and reporting at each stage.",
+      "tags": [
+        "domain",
+        "state_machine",
+        "granular_status",
+        "integer",
+        "workflow"
+      ]
+    },
+    {
+      "rule_id": 80,
+      "category": "convention",
+      "rule_name": "Media and Metadata Always Co-located",
+      "priority": "high",
+      "trigger_when": [
+        "media file uploads",
+        "document or image submissions",
+        "any file URL that needs type context"
+      ],
+      "enforce": [
+        "file URL and file type always in same table, same row",
+        "paired columns: file1 + file_type1, file2 + file_type2",
+        "never store file URL in one table and file type in another"
+      ],
+      "reason": "A file URL without type context is useless for rendering. Co-location ensures atomic retrieval of both.",
+      "tags": [
+        "convention",
+        "media",
+        "metadata",
+        "co_location",
+        "file_type"
+      ]
+    },
+    {
+      "rule_id": 81,
+      "category": "workflow",
+      "rule_name": "Generic Approval Engine",
+      "priority": "high",
+      "trigger_when": [
+        "multiple different entity types all requiring approval",
+        "approval logic needs to be centralised"
+      ],
+      "enforce": [
+        "single approval table with reference_id (FK value) + reference_table (table name as varchar)",
+        "handles all approval types without entity-specific approval tables",
+        "one approval table serves all entities in the system"
+      ],
+      "reason": "Entity-specific approval tables create N duplicate approval schemas. One generic engine handles all.",
+      "tags": [
+        "workflow",
+        "approval",
+        "generic",
+        "reference_id",
+        "reference_table"
+      ]
+    },
+    {
+      "rule_id": 82,
+      "category": "calendar",
+      "rule_name": "Dual-Column Calendar: Availability + Content",
+      "priority": "medium",
+      "trigger_when": [
+        "calendar systems with both availability and notes per slot",
+        "scheduling with per-slot metadata"
+      ],
+      "enforce": [
+        "a_N columns (tinyint) for availability flag per slot (0=unavailable, 1=available)",
+        "m_N columns (text) for content/notes per slot",
+        "paired: a_1 + m_1, a_2 + m_2... for each slot"
+      ],
+      "reason": "Availability (boolean) and content (text) are different data types serving different query purposes. Pairing keeps them atomic.",
+      "tags": [
+        "calendar",
+        "availability",
+        "dual_column",
+        "scheduling",
+        "notes"
+      ]
+    },
+    {
+      "rule_id": 83,
+      "category": "workflow",
+      "rule_name": "Multi-Party Scheduling Inline",
+      "priority": "medium",
+      "trigger_when": [
+        "multi-party appointment scheduling",
+        "interviews requiring both party availability",
+        "any scheduling requiring mutual agreement"
+      ],
+      "enforce": [
+        "N proposed slot columns on the row",
+        "agreed_slot column for the confirmed slot",
+        "per-party confirmation flags (party1_confirmed, party2_confirmed)"
+      ],
+      "reason": "Multi-party scheduling state fits in a single row. Separate scheduling tables add unnecessary JOIN complexity.",
+      "tags": [
+        "workflow",
+        "scheduling",
+        "multi_party",
+        "inline",
+        "appointments"
+      ]
+    },
+    {
+      "rule_id": 84,
+      "category": "workflow",
+      "rule_name": "Regulatory Deadline Tracking Inline",
+      "priority": "medium",
+      "trigger_when": [
+        "regulatory compliance deadlines",
+        "legal or statutory timelines",
+        "SLA deadline tracking"
+      ],
+      "enforce": [
+        "reminder_count, last_reminder_on, next_reminder_on columns on entity row",
+        "breach_flag tinyint column set when deadline passed",
+        "deadline itself as a typed date column"
+      ],
+      "reason": "Regulatory deadline state is always about the entity. Inline columns eliminate a JOIN to retrieve deadline status.",
+      "tags": [
+        "workflow",
+        "regulatory",
+        "deadline",
+        "reminder",
+        "compliance"
+      ]
+    },
+    {
+      "rule_id": 85,
+      "category": "workflow",
+      "rule_name": "Deferred Entities with Expiry and Priority",
+      "priority": "medium",
+      "trigger_when": [
+        "pending or deferred matching entities",
+        "demand that cannot be immediately fulfilled",
+        "requirement flags waiting for supply match"
+      ],
+      "enforce": [
+        "dedicated deferred/pending table",
+        "matched_id pointer column (0 or NULL until matched)",
+        "expiry_on datetime column",
+        "priority_flag column for queue ordering"
+      ],
+      "reason": "Deferred entities have their own lifecycle (open → matched → expired). They are first-class entities, not afterthoughts.",
+      "tags": [
+        "workflow",
+        "deferred",
+        "matching",
+        "expiry",
+        "priority"
+      ]
+    },
+    {
+      "rule_id": 86,
+      "category": "financial",
+      "rule_name": "Targets and Actuals in Separate Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "budgeting and forecasting",
+        "targets vs actuals tracking",
+        "KPI measurement systems"
+      ],
+      "enforce": [
+        "target/budget table separate from actual/transaction table",
+        "never store planned and actual amounts in same row"
+      ],
+      "reason": "Targets and actuals change for different reasons, at different frequencies, by different people. Separation prevents conflation.",
+      "tags": [
+        "financial",
+        "targets",
+        "actuals",
+        "budgeting",
+        "separation"
+      ]
+    },
+    {
+      "rule_id": 87,
+      "category": "workflow",
+      "rule_name": "Resubmission Counter Inline",
+      "priority": "low",
+      "trigger_when": [
+        "resubmission workflows",
+        "application correction cycles",
+        "forms that can be revised and resubmitted"
+      ],
+      "enforce": [
+        "update_count or resubmission_count integer column defaulting to 0",
+        "increment on every resubmission or correction",
+        "enables detection of habitual resubmitters"
+      ],
+      "reason": "Resubmission count enables business intelligence (how many tries did it take?) and fraud detection (excessive corrections).",
+      "tags": [
+        "workflow",
+        "resubmission",
+        "counter",
+        "correction",
+        "inline"
+      ]
+    },
+    {
+      "rule_id": 88,
+      "category": "configuration",
+      "rule_name": "Product-Prefixed Columns in Singleton Policy Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "singleton policy tables covering multiple products",
+        "platform-level plan or pricing tables"
+      ],
+      "enforce": [
+        "prefix policy columns with product code (il_ for insurance loan, ccl_ for credit card loan)",
+        "single table can hold policies for multiple products via prefixed column groups"
+      ],
+      "reason": "Product-prefixed columns in a singleton eliminate the need for one policy table per product.",
+      "tags": [
+        "configuration",
+        "product_prefix",
+        "singleton",
+        "policy",
+        "multi_product"
+      ]
+    },
+    {
+      "rule_id": 90,
+      "category": "security",
+      "rule_name": "Security and Fraud Tracking in Schema",
+      "priority": "medium",
+      "trigger_when": [
+        "fraud detection systems",
+        "visitor or user blacklisting",
+        "security incident tracking"
+      ],
+      "enforce": [
+        "dedicated blacklist/blocklist table with reason, blocked_by, blocked_on columns",
+        "fraud flags stored in schema — not only in application logs or external systems"
+      ],
+      "reason": "Application logs are ephemeral. Schema-level fraud records are persistent, queryable, and part of the audit trail.",
+      "tags": [
+        "security",
+        "fraud",
+        "blacklist",
+        "audit",
+        "incident_tracking"
+      ]
+    },
+    {
+      "rule_id": 91,
+      "category": "architecture",
+      "rule_name": "Placeholder Tables Reserve Architectural Intent",
+      "priority": "low",
+      "trigger_when": [
+        "future modules planned but not yet built",
+        "architectural reservation for known upcoming features"
+      ],
+      "enforce": [
+        "create table with only PK column to reserve the name and signal intent",
+        "add COMMENT on table explaining what this will become"
+      ],
+      "reason": "Schema design is communication. A placeholder table communicates to future developers: this space is intentionally reserved.",
+      "tags": [
+        "architecture",
+        "placeholder",
+        "intent",
+        "future_module",
+        "reservation"
+      ]
+    },
+    {
+      "rule_id": 92,
+      "category": "domain",
+      "rule_name": "Flat Tables for Fixed Third-Party API Responses",
+      "priority": "medium",
+      "trigger_when": [
+        "storing responses from third-party APIs with fixed known structure",
+        "government API responses (Aadhar, PAN, DL verification)"
+      ],
+      "enforce": [
+        "flatten fixed-structure API response into typed columns",
+        "one column per field in the API response",
+        "do not store as JSON blob when response structure is stable"
+      ],
+      "avoid": [
+        "JSON blob storage for fixed-schema API responses — makes field querying impossible"
+      ],
+      "reason": "Fixed-structure API responses deserve typed columns for queryability, validation, and index support.",
+      "tags": [
+        "domain",
+        "third_party_api",
+        "flat_table",
+        "API_response",
+        "verification"
+      ]
+    },
+    {
+      "rule_id": 93,
+      "category": "convention",
+      "rule_name": "Composite Role Type Integers",
+      "priority": "low",
+      "trigger_when": [
+        "small fixed set of role combinations",
+        "user types that are a product of two roles"
+      ],
+      "enforce": [
+        "use composite integer for small fixed role combinations (1=owner, 2=employee, 3=both)",
+        "document all values in COMMENT"
+      ],
+      "reason": "For 3-5 fixed combinations, a composite integer is simpler than a join table.",
+      "tags": [
+        "convention",
+        "composite_role",
+        "user_type",
+        "integer",
+        "roles"
+      ]
+    },
+    {
+      "rule_id": 94,
+      "category": "architecture",
+      "rule_name": "Operational State on Reusable Entity Row",
+      "priority": "medium",
+      "trigger_when": [
+        "reusable physical or virtual assets (parking slots, devices, watches)",
+        "assets that cycle through available/allocated/suspended states"
+      ],
+      "enforce": [
+        "current operational state tracked directly on entity row (available/allocated/suspended)",
+        "entry_exit_status and operational_status as separate typed columns on the asset row"
+      ],
+      "reason": "Asset state must be readable in O(1) without joining to allocation tables. The asset row is the source of truth for its own state.",
+      "tags": [
+        "architecture",
+        "operational_state",
+        "assets",
+        "reusable",
+        "IoT"
+      ]
+    },
+    {
+      "rule_id": 95,
+      "category": "configuration",
+      "rule_name": "Algorithm Parameters as Schema Columns",
+      "priority": "medium",
+      "trigger_when": [
+        "configurable scoring systems",
+        "salary calculation with tunable parameters",
+        "any business algorithm with configurable inputs"
+      ],
+      "enforce": [
+        "min_count, max_count, ratios, intervals stored as typed schema columns",
+        "changing business rules = data UPDATE, not code deployment",
+        "parameters are versioned with from_date/to_date"
+      ],
+      "reason": "Algorithm parameters in code require redeployment to change. Parameters in schema can be updated by operations team.",
+      "tags": [
+        "configuration",
+        "algorithm",
+        "parameters",
+        "configurable",
+        "business_rules"
+      ]
+    },
+    {
+      "rule_id": 96,
+      "category": "configuration",
+      "rule_name": "Hybrid Singleton: Typed + Name-Value",
+      "priority": "medium",
+      "trigger_when": [
+        "mostly-stable configuration with occasional dynamic extensions",
+        "settings where some keys are known and some are dynamic"
+      ],
+      "enforce": [
+        "typed columns for known stable configuration fields",
+        "name/value pair rows (or JSON column) for dynamic/extensible configuration",
+        "both mechanisms on same configuration table"
+      ],
+      "reason": "Typed columns give performance and validation for known fields. Name-value pairs give flexibility for unknown future fields.",
+      "tags": [
+        "configuration",
+        "hybrid",
+        "name_value",
+        "typed_columns",
+        "extensible"
+      ]
+    },
+    {
+      "rule_id": 97,
+      "category": "architecture",
+      "rule_name": "Fixed-Depth Category Hierarchy with Separate Level Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "category → subcategory → item hierarchies",
+        "fixed-depth hierarchies where each level has its own independent attributes"
+      ],
+      "enforce": [
+        "separate table per level: category_header_all, sub_category_header_all, item_header_all",
+        "each level table has its own attributes independent of other levels"
+      ],
+      "reason": "Fixed-depth hierarchies with independent attributes per level cannot be cleanly represented in a single self-referencing table.",
+      "tags": [
+        "architecture",
+        "hierarchy",
+        "category",
+        "fixed_depth",
+        "separate_tables"
+      ]
+    },
+    {
+      "rule_id": 98,
+      "category": "workflow",
+      "rule_name": "Three-Table State Machine for Approvals",
+      "priority": "high",
+      "trigger_when": [
+        "approval workflows with in-flight, approved, and rejected states",
+        "payment state machines",
+        "any workflow with three distinct terminal states"
+      ],
+      "enforce": [
+        "_temp_ table: in-flight records being processed",
+        "_header_all table: approved and permanently active records",
+        "_failed_all or _rejected_all table: rejected, failed, or cancelled records",
+        "data promotes between tables as state advances — never updates in place"
+      ],
+      "reason": "State promotion via table movement keeps each table clean and purpose-specific. Query performance is better as tables stay small.",
+      "tags": [
+        "workflow",
+        "state_machine",
+        "three_table",
+        "promotion",
+        "approval"
+      ]
+    },
+    {
+      "rule_id": 99,
+      "category": "identity",
+      "rule_name": "UUID Only for Genuinely Cross-System Entities",
+      "priority": "medium",
+      "trigger_when": [
+        "entities that must be globally unique across multiple independent systems",
+        "IDs that will be shared between databases that cannot coordinate"
+      ],
+      "enforce": [
+        "use UUID as PK only when global uniqueness across independently-operating systems is required",
+        "use auto-increment int for all internal entities"
+      ],
+      "avoid": [
+        "UUID as default PK choice for internal entities",
+        "UUID where auto-increment int is sufficient — UUID adds index overhead"
+      ],
+      "reason": "UUID PKs have higher storage cost, worse index performance, and worse INSERT performance. Use only when genuinely needed.",
+      "tags": [
+        "identity",
+        "UUID",
+        "primary_key",
+        "cross_system",
+        "performance"
+      ]
+    },
+    {
+      "rule_id": 100,
+      "category": "monitoring",
+      "rule_name": "Column-Level Capacity Monitoring",
+      "priority": "medium",
+      "trigger_when": [
+        "CSV accumulator columns with fixed slot limits",
+        "numbered column sets with capacity ceilings"
+      ],
+      "enforce": [
+        "table_performance_information_all tracks fill level of CSV and numbered columns",
+        "alert threshold column: notify when column approaches capacity",
+        "stop flag column: halt writes when column is full"
+      ],
+      "reason": "CSV columns and numbered slot columns have hard capacity limits. Breaching them silently corrupts data.",
+      "tags": [
+        "monitoring",
+        "capacity",
+        "CSV_columns",
+        "numbered_columns",
+        "alerts"
+      ]
+    },
+    {
+      "rule_id": 101,
+      "category": "monitoring",
+      "rule_name": "UI Process Registry in Schema",
+      "priority": "medium",
+      "trigger_when": [
+        "role-based access control systems",
+        "form and process permission management",
+        "any system where UI access is controlled per role"
+      ],
+      "enforce": [
+        "every screen, form, and action registered as rows in a process registry table",
+        "access control references form_ids and process_ids from registry",
+        "adding a new screen = inserting a row, not writing code"
+      ],
+      "reason": "Code-based access control requires deployment for every permission change. DB-based control is instant and auditable.",
+      "tags": [
+        "monitoring",
+        "access_control",
+        "RBAC",
+        "process_registry",
+        "UI"
+      ]
+    },
+    {
+      "rule_id": 102,
+      "category": "operations",
+      "rule_name": "Error Logging as Schema Entity with Lifecycle",
+      "priority": "medium",
+      "trigger_when": [
+        "third-party API error tracking",
+        "payment failure logging",
+        "any operational error that requires follow-up action"
+      ],
+      "enforce": [
+        "error log table with status lifecycle: open → acknowledged → resolved",
+        "error_datetime, type, service_provider, error_message, loss_amount columns",
+        "errors are first-class entities — not just log files"
+      ],
+      "reason": "Errors with financial or operational impact need assignment, tracking, and resolution confirmation — not just a log entry.",
+      "tags": [
+        "operations",
+        "error_logging",
+        "lifecycle",
+        "third_party_api",
+        "resolution"
+      ]
+    },
+    {
+      "rule_id": 103,
+      "category": "financial",
+      "rule_name": "Multi-Tier Transaction Consolidation",
+      "priority": "high",
+      "trigger_when": [
+        "high-volume transaction tables needing periodic consolidation",
+        "reporting aggregation requirements",
+        "tables that grow too large for direct reporting queries"
+      ],
+      "enforce": [
+        "Individual transactions → daily consolidation table → monthly consolidation table",
+        "consolidated_on timestamp marks when each consolidation ran",
+        "historical individual records preserved; consolidation is additive"
+      ],
+      "reason": "Running SUM/COUNT on years of individual transactions is slow. Tiered consolidation makes period reporting instant.",
+      "tags": [
+        "financial",
+        "consolidation",
+        "daily",
+        "monthly",
+        "reporting",
+        "performance"
+      ]
+    },
+    {
+      "rule_id": 104,
+      "category": "convention",
+      "rule_name": "JSON Strings in Numbered Slot Columns",
+      "priority": "medium",
+      "trigger_when": [
+        "numbered slot columns where each slot needs multiple related attributes",
+        "exam question slots with answer, status, and time",
+        "notification slots with ID, body, and delivery status"
+      ],
+      "enforce": [
+        "encode as compact JSON string within varchar column when slot needs multiple attributes",
+        "use when: slot count is fixed, data is read-mostly, multi-attribute always retrieved as unit",
+        "example: question_1 = '{\"que_id\":101,\"marked_ans\":\"B\",\"status\":1,\"correct_ans\":\"B\"}'"
+      ],
+      "avoid": [
+        "separate columns for each sub-attribute of a numbered slot when attributes are always retrieved together"
+      ],
+      "reason": "When a slot's sub-attributes are always retrieved together and never individually queried, JSON encoding keeps the schema compact.",
+      "tags": [
+        "convention",
+        "JSON",
+        "numbered_slots",
+        "compact_encoding",
+        "varchar"
+      ]
+    },
+    {
+      "rule_id": 105,
+      "category": "constraints",
+      "rule_name": "JSON CHECK Constraints on Calendar Columns",
+      "priority": "medium",
+      "trigger_when": [
+        "monthly calendar columns storing structured JSON objects per day",
+        "numbered day columns with multi-attribute JSON content"
+      ],
+      "enforce": [
+        "add CHECK (json_valid(day_N)) on numbered calendar columns storing JSON",
+        "enforces JSON format at DB level — not only application layer"
+      ],
+      "reason": "JSON validity enforced at DB level prevents malformed JSON from being stored, which would break all reads of that slot.",
+      "tags": [
+        "constraints",
+        "JSON",
+        "check_constraint",
+        "calendar",
+        "json_valid"
+      ]
+    },
+    {
+      "rule_id": 106,
+      "category": "architecture",
+      "rule_name": "Dual-Layer Index + Detail in Numbered Slot Columns",
+      "priority": "high",
+      "trigger_when": [
+        "numbered slot columns where slots contain complex objects",
+        "blacklist tables with mobile numbers and visitor details",
+        "batch record tables where individual item lookup is needed"
+      ],
+      "enforce": [
+        "parallel key columns (mobile_1...mobile_N) for fast indexed lookup — searchable without parsing",
+        "parallel detail columns (detail_1...detail_N) for full record retrieval",
+        "key columns enable WHERE mobile_N = '9876543210' without touching detail columns"
+      ],
+      "reason": "Without key columns, finding whether a specific value exists requires parsing all detail JSON/CSV slots. O(N) vs O(1).",
+      "tags": [
+        "architecture",
+        "dual_layer",
+        "indexed_lookup",
+        "numbered_slots",
+        "performance"
+      ]
+    },
+    {
+      "rule_id": 107,
+      "category": "architecture",
+      "rule_name": "Framework Tables Coexist Unchanged",
+      "priority": "high",
+      "trigger_when": [
+        "Laravel, Django, Rails, or any framework generates its own tables in the same database",
+        "framework migration system manages schema alongside custom tables"
+      ],
+      "enforce": [
+        "leave framework-generated tables as-is (migrations, jobs, sessions, cache, cache_locks, failed_jobs)",
+        "never rename or restructure framework tables into your naming convention",
+        "framework tables are infrastructure — managed by framework, not by your schema conventions"
+      ],
+      "avoid": [
+        "renaming 'jobs' to 'job_header_all'",
+        "renaming 'sessions' to 'session_header_all'",
+        "any modification of framework-owned tables"
+      ],
+      "reason": "Framework updates regenerate or reference these tables by their exact original names. Renaming them breaks the framework.",
+      "tags": [
+        "architecture",
+        "framework",
+        "Laravel",
+        "Django",
+        "coexistence",
+        "migrations"
+      ]
+    },
+    {
+      "rule_id": 108,
+      "category": "architecture",
+      "rule_name": "Relationship-Scoped Permissions Inline on Linkage Row",
+      "priority": "high",
+      "trigger_when": [
+        "network relationships between entities where access scope varies per relationship",
+        "broker-to-broker connections with filtered property access",
+        "agency-to-campus linkages with specific authority levels"
+      ],
+      "enforce": [
+        "encode permission scope directly on the linkage/relationship row",
+        "allowed categories, types, areas, access_type stored on the relationship record itself",
+        "the linkage row IS the access control record — no separate permission table"
+      ],
+      "avoid": [
+        "separate permission table for relationship-specific access control"
+      ],
+      "reason": "Relationship permissions are intrinsic to the relationship. Separating them requires an extra JOIN and creates synchronisation risk.",
+      "tags": [
+        "architecture",
+        "permissions",
+        "relationship",
+        "linkage",
+        "access_control",
+        "inline"
+      ]
+    },
+    {
+      "rule_id": 109,
+      "category": "architecture",
+      "rule_name": "old_ Prefix for Superseded Schema-Version Tables",
+      "priority": "medium",
+      "trigger_when": [
+        "schema redesign retaining historical data from prior version",
+        "tables replaced by new design but kept for legacy data access"
+      ],
+      "enforce": [
+        "old_ prefix for tables superseded by a schema redesign but retained for history",
+        "old_ tables are read-only relics — never written to after cutover",
+        "document in table COMMENT: when superseded and what replaced it"
+      ],
+      "avoid": [
+        "using old_ prefix for ongoing operational archives — use _archive_all for that",
+        "confusing old_ (schema version relic) with _archive_all (ongoing operational history)"
+      ],
+      "reason": "old_ signals 'this existed in a prior schema design'. _archive_all signals 'this is an ongoing copy of live data'. They are different things.",
+      "tags": [
+        "architecture",
+        "old_prefix",
+        "schema_versioning",
+        "legacy",
+        "migration"
+      ]
+    }
+  ]
+}

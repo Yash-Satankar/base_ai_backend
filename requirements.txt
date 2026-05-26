@@ -1,0 +1,18 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+sqlalchemy
+psycopg2-binary
+alembic
+python-dotenv
+# anthropic        ← commented until you have credits
+groq
+qdrant-client
+sentence-transformers
+numpy<2              # torch compiled with numpy 1.x; numpy 2 breaks it
+httpx
+tiktoken
+reportlab
+slowapi
+sqlparse
