@@ -58,47 +58,49 @@ def generate_schema(
 
 
 def _generate_with_groq(system_prompt: str, user_prompt: str) -> dict:
-    """Generate using Groq (Llama 3.3 70B) — free tier."""
+    """Generate using Groq — with timeout."""
     client = get_groq_client()
 
     try:
         response = client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ],
-        max_tokens=settings.MAX_TOKENS,
-        temperature=0.2,   # low temperature = more deterministic SQL
-        timeout=60,
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=settings.MAX_TOKENS,
+            temperature=0.2,
+            timeout=settings.AI_TIMEOUT_SECONDS,   # ← timeout
         )
     except Exception as e:
-        if "timeout" in str(e).lower():
+        err = str(e).lower()
+        if "timeout" in err or "timed out" in err:
             raise HTTPException(
                 status_code=504,
-                detail="AI generation timed out. Please try again."
+                detail=(
+                    "AI generation timed out. "
+                    "Your requirement may be too complex. "
+                    "Try breaking it into smaller modules."
+                ),
             )
-        raise
+        raise HTTPException(
+            status_code=503,
+            detail=f"AI service unavailable: {str(e)[:100]}",
+        )
 
-    content = response.choices[0].message.content
-    input_tokens = response.usage.prompt_tokens
-    output_tokens = response.usage.completion_tokens
+    content    = response.choices[0].message.content
+    in_tokens  = response.usage.prompt_tokens
+    out_tokens = response.usage.completion_tokens
 
-    logger.info(f"✅ Groq response: {input_tokens} in / {output_tokens} out tokens")
+    logger.info(f"✅ Groq: {in_tokens} in / {out_tokens} out tokens")
 
     return {
-        "content": content,
+        "content":  content,
         "provider": "groq",
-        "model": settings.GROQ_MODEL,
+        "model":    settings.GROQ_MODEL,
         "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
+            "input_tokens":  in_tokens,
+            "output_tokens": out_tokens,
         },
     }
 

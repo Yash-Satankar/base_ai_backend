@@ -1,6 +1,6 @@
 # app/api/routes/conversation.py
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
 import os
 from pydantic import BaseModel, Field, ConfigDict
@@ -10,6 +10,11 @@ from app.services.conversation_service import (
     get_session,
     process_message,
     delete_session,
+)
+from app.core.security import (
+    limiter,
+    verify_api_key,
+    sanitise_input,
 )
 
 router = APIRouter()
@@ -40,45 +45,48 @@ class MessageResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-@router.post("/start", response_model=StartSessionResponse)
-async def start_conversation():
-    """
-    Start a new schema generation conversation.
-    Returns a session_id to use in all subsequent messages.
-    """
+@router.post("/start")
+@limiter.limit("10/hour")          # max 10 new sessions per hour per IP
+async def start_conversation(request: Request):
     state = create_session()
     return StartSessionResponse(
         session_id=state.session_id,
-        message="Hello! Tell me about the database you want to build. Describe your project — what it does, who uses it, and what data it needs to manage.",
+        message="Hello! Tell me about the database you want to build.",
         stage=state.stage,
     )
 
 
 @router.post("/message", response_model=MessageResponse)
-@limiter.limit("30/minute")
-async def send_message(body: MessageRequest):
-    """
-    Send a message in an existing conversation.
-    
-    Flow:
-    1. First message → domain detection + clarifying questions
-    2. Answer questions → blueprint shown
-    3. Confirm blueprint → schema generated + validated
-    4. Schema delivered with .sql and .pdf
-    """
+@limiter.limit("30/minute")        # 30 messages per minute per IP
+async def send_message(
+    request: Request,
+    body: MessageRequest,
+    # api_key: str = Depends(verify_api_key),  # ← uncomment when ready
+):
+    # Sanitise input
+    clean_message = sanitise_input(body.message)
+
     state = get_session(body.session_id)
     if not state:
         raise HTTPException(
             status_code=404,
-            detail=f"Session '{body.session_id}' not found. Start a new session first."
+            detail="Session not found. Please start a new session.",
         )
 
     try:
-        response = process_message(body.session_id, body.message)
-        response["session_id"] = body.session_id
-        return MessageResponse(**response)
+        response = process_message(body.session_id, clean_message)
+        return MessageResponse(
+            session_id=body.session_id,
+            **response,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Message processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process message. Please try again.",
+        )
 
 
 @router.get("/session/{session_id}")

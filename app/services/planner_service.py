@@ -6,6 +6,7 @@ from app.services.ai_service import generate_schema
 import logging
 import time
 from app.validators.schema_validator import SchemaValidator
+from app.validators.sql_syntax_validator import validate_sql_syntax
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +118,16 @@ def generate_database_schema(
             for i in validation.issues
         ],
     }
+    # ── SQL syntax check ─────────────────────────────────────────
+    syntax_check = validate_sql_syntax(ai_response["content"])
+    if not syntax_check["valid"]:
+        logger.warning(
+            f"SQL syntax issues: {syntax_check['issues']}"  
+        )
+    response["syntax_check"] = syntax_check
 
     logger.info(f"📊 Validation: {validation.summary}")
+    logger.info(f"📊 Syntax Check: {syntax_check['issues']}")
     return response
 
 

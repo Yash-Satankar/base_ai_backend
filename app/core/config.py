@@ -1,32 +1,25 @@
-# app/core/config.py
-
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Optional
 
 
 class Settings(BaseSettings):
     # App
-    APP_NAME: str = "Base AI"
+    APP_NAME: str = "AI DB Schema Generator"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
 
-    # ─── AI Provider ───────────────────────────────────────────
-    # Switch between providers by changing AI_PROVIDER in .env
-    # Options: "groq" | "anthropic"
+    # AI Provider
     AI_PROVIDER: str = "groq"
-
-    # Groq (free) — get key at console.groq.com
     GROQ_API_KEY: str = "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"
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-
-    # Anthropic (paid) — uncomment when you have credits
     # ANTHROPIC_API_KEY: str = ""
     # ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
 
-    # Shared generation settings
+    # Generation
     MAX_TOKENS: int = 8000
     TOP_K_RULES: int = 15
-    # ───────────────────────────────────────────────────────────
+    AI_TIMEOUT_SECONDS: int = 60
 
     # Qdrant
     QDRANT_URL: str
@@ -36,9 +29,20 @@ class Settings(BaseSettings):
     # Postgres
     DATABASE_URL: str
 
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_SESSION_TTL: int = 86400      # 24 hours
+
+    # Security
+    MASTER_API_KEY: str = ""
+    ALLOWED_ORIGINS: str = "http://localhost:3000"
+
     # Embedding
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     EMBEDDING_DIMENSION: int = 384
+
+    def get_allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
 
     class Config:
         env_file = ".env"

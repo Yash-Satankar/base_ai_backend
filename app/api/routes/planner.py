@@ -1,6 +1,6 @@
 # app/api/routes/planner.py
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from app.core.auth import verify_api_key
 from app.schemas.planner_schemas import (
     GenerateSchemaRequest,
@@ -13,6 +13,7 @@ from app.services.planner_service import (
     get_matched_rules_only,
 )
 import logging
+from app.core.security import limiter, verify_api_key, sanitise_input
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -20,31 +21,20 @@ router = APIRouter()
 
 @router.post("/generate", response_model=GenerateSchemaResponse)
 @limiter.limit("5/minute")
-async def generate_schema_endpoint(body: GenerateSchemaRequest, key=Depends(verify_api_key)):
-    """
-    Main endpoint — generates complete MySQL schema from requirement.
-
-    Steps internally:
-    1. Detects domain
-    2. Matches relevant rules from Qdrant
-    3. Injects rules into AI prompt
-    4. Generates schema
-    5. Returns schema + metadata
-    """
+async def generate_schema_endpoint(
+    request: Request,
+    body: GenerateSchemaRequest,
+    # api_key: str = Depends(verify_api_key),
+):
+    clean_req = sanitise_input(body.requirement)
     try:
-        result = generate_database_schema(
-            requirement=body.requirement,
-            additional_context=body.additional_context,
-        )
-        return GenerateSchemaResponse(
-            success=True,
-            schema=result["schema"],
-            metadata=result["metadata"],
-            validation=result.get("validation"),
-        )
+        result = generate_database_schema(requirement=clean_req)
+        return GenerateSchemaResponse(success=True, **result)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Schema generation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Schema generation failed.")
 
 
 @router.post("/match-rules", response_model=MatchRulesResponse)

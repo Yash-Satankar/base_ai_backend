@@ -1,5 +1,3 @@
-# app/services/conversation_service.py
-
 import uuid
 import json
 import logging
@@ -30,28 +28,35 @@ from app.engine.intent_handlers import (
     handle_explain,
 )
 
+from app.db.session_store import (
+    save_session,
+    load_session,
+    delete_session as _delete_from_store,
+)
+
 logger = logging.getLogger(__name__)
 
 # In-memory session store
 # Replace with Redis when you go to production
 _sessions: dict[str, ConversationState] = {}
 
-
 def create_session() -> ConversationState:
-    """Create a new conversation session."""
+    """Create and persist a new conversation session."""
     session_id = str(uuid.uuid4())
     state = ConversationState(session_id=session_id)
-    _sessions[session_id] = state
-    logger.info(f"✅ New session created: {session_id}")
+    save_session(state)
+    logger.info(f"✅ Session created: {session_id}")
     return state
 
 
 def get_session(session_id: str) -> Optional[ConversationState]:
-    return _sessions.get(session_id)
-
+    """Load session from Redis (or memory fallback)."""
+    return load_session(session_id)
 
 def delete_session(session_id: str):
-    _sessions.pop(session_id, None)
+    """Delete session from store."""
+    _delete_from_store(session_id)
+    logger.info(f"🗑️ Session deleted: {session_id}")
 
 def detect_intent(message: str, state: ConversationState) -> str:
     """
@@ -219,6 +224,7 @@ def process_message(session_id: str, user_message: str) -> dict:
 
     # ── Step 5: Record assistant response ────────────────────────
     state.add_message("assistant", response.get("message", ""))
+    save_session(state)
     return response
 
 def _handle_initial(state: ConversationState, user_message: str) -> dict:
