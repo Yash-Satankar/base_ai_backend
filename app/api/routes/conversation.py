@@ -1,5 +1,6 @@
 # app/api/routes/conversation.py
 
+import logging
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
 import os
@@ -17,6 +18,7 @@ from app.core.security import (
     sanitise_input,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -76,7 +78,6 @@ async def send_message(
     try:
         response = process_message(body.session_id, clean_message)
         return MessageResponse(
-            session_id=body.session_id,
             **response,
         )
     except HTTPException:

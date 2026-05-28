@@ -58,63 +58,6 @@ def delete_session(session_id: str):
     _delete_from_store(session_id)
     logger.info(f"🗑️ Session deleted: {session_id}")
 
-def detect_intent(message: str, state: ConversationState) -> str:
-    """
-    Detect what the user actually wants to do.
-    Returns intent string.
-    """
-    msg = message.lower().strip()
-
-    # Start over signals
-    if any(w in msg for w in ["start over", "reset", "new project", 
-                                "forget it", "start fresh", "start again"]):
-        return "start_over"
-
-    # Confirmation with additions
-    if msg.startswith("yes") and len(msg) > 10:
-        return "confirm_with_changes"
-
-    # Pure confirmation
-    if msg in ["yes", "yes.", "confirm", "ok", "okay", 
-               "looks good", "correct", "proceed", "go ahead"]:
-        return "confirm"
-
-    # Edit/modify signals
-    if any(w in msg for w in ["edit", "change", "modify", "update", 
-                                "remove", "delete", "replace"]):
-        return "edit"
-
-    # Add signals
-    if any(w in msg for w in ["add", "include", "also need", 
-                                "dont forget", "missing"]):
-        return "add"
-
-    # Regenerate signals
-    if any(w in msg for w in ["regenerate", "redo", "again", 
-                                "try again", "different"]):
-        return "regenerate"
-
-    # Question signals
-    if msg.endswith("?") or msg.startswith(("what", "how", "why", 
-                                              "when", "where", "who")):
-        return "question"
-
-    # Existing SQL paste
-    if "create table" in msg.lower():
-        return "paste_sql"
-
-    # Context switch — completely different topic
-    current_domain_words = []
-    if state.blueprint:
-        current_domain_words = [state.blueprint.domain]
-    # If new domain keywords don't overlap with current
-    # (complex — use AI for this in production)
-    
-    return "normal"
-
-# app/services/conversation_service.py
-# In process_message, update the routing:
-
 def process_message(session_id: str, user_message: str) -> dict:
     """
     Main conversation router.

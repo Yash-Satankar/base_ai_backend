@@ -15,16 +15,23 @@ logger = logging.getLogger(__name__)
 # When a domain is detected, these rules are ALWAYS included
 # regardless of semantic search results
 DOMAIN_MANDATORY_RULES = {
-    "financial": [7, 27, 29, 51, 57, 103],
-    "hr": [2, 4, 11, 18, 38, 69],
-    "security_agency": [9, 35, 54, 94, 100],
-    "real_estate": [25, 44, 60, 81, 83, 108],
-    "e_learning": [4, 8, 74, 95, 104],
-    "iot_wearables": [37, 52, 54, 80, 94],
-    "multi_tenant_saas": [10, 34, 44, 96, 101, 107],
-    "e_commerce": [3, 9, 27, 29, 38, 51],
-    "land_acquisition": [4, 11, 12, 15, 16],
-    "general": [1, 2, 3, 8, 9, 18, 30, 31, 32],
+    "financial":           [7, 27, 29, 51, 57, 103],
+    "hr":                  [2, 4, 11, 18, 38, 69],
+    "security_agency":     [9, 35, 54, 94, 100],
+    "real_estate":         [25, 44, 60, 81, 83, 108],
+    "e_learning":          [4, 8, 74, 95, 104],
+    "iot_wearables":       [37, 52, 54, 80, 94],
+    "multi_tenant_saas":   [10, 34, 44, 96, 101, 107],
+    "e_commerce":          [3, 9, 27, 29, 38, 51],
+    "land_acquisition":    [4, 11, 12, 15, 16],
+
+    # ── New domains ───────────────────────────────────────────────
+    "corporate_enterprise": [4, 11, 39, 44, 52, 81, 83, 84],
+    "healthcare":           [2, 3, 7, 18, 39, 43, 60],
+    "logistics":            [2, 38, 39, 52, 54, 94],
+    "project_management":   [4, 11, 38, 39, 44, 81],
+
+    "general":             [1, 2, 3, 8, 9, 18, 30, 31, 32],
 }
 
 # Universal rules — always included for EVERY schema

@@ -108,6 +108,30 @@ CLARIFYING_QUESTIONS = {
         "Roughly how many users will this system handle?",
         "Do you need any Indian compliance (GST, etc.)?",
     ],
+    "corporate_enterprise": [
+        "What types of meetings need to be managed? (one-on-one, group, investor, broker)",
+        "Do you need plant visit or site visit scheduling?",
+        "Will you track meeting participants from multiple companies?",
+        "Do you need calendar integration (Google Calendar, Teams, Meet)?",
+    ],
+    "healthcare": [
+        "Will this handle patient appointments and medical records?",
+        "Do you need billing/insurance claim management?",
+        "Will multiple doctors or departments use this?",
+        "Do you need prescription or lab report tracking?",
+    ],
+    "logistics": [
+        "Will you track vehicle fleets and drivers?",
+        "Do you need real-time shipment tracking?",
+        "Will this handle warehouse inventory?",
+        "Do you need route optimisation or delivery scheduling?",
+    ],
+    "project_management": [
+        "Will you need task assignment and deadline tracking?",
+        "Do you need sprint/agile workflow support?",
+        "Will multiple teams collaborate on projects?",
+        "Do you need time tracking or resource allocation?",
+    ],
 }
 
 SCALE_QUESTIONS = [

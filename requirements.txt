@@ -16,3 +16,4 @@ slowapi
 redis
 sqlparse
 python-multipart
+reportlab
