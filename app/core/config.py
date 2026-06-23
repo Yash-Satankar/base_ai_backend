@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     # ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
 
     # Generation
-    MAX_TOKENS: int = 8000
+    MAX_TOKENS: int = 12000
     TOP_K_RULES: int = 15
-    AI_TIMEOUT_SECONDS: int = 60
+    AI_TIMEOUT_SECONDS: int = 120
 
     # Qdrant
     QDRANT_URL: str

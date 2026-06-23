@@ -1,70 +1,138 @@
 # app/services/planner_service.py
 
-from app.engine.rule_matcher import match_rules
-from app.prompts.system_prompt import build_system_prompt, build_user_prompt
-from app.services.ai_service import generate_schema
-import logging
 import time
+import logging
+from app.engine.rule_matcher import match_rules
+from app.prompts.system_prompt import (
+    build_system_prompt,
+    build_module_prompt,
+    build_stitch_prompt,
+)
+from app.services.ai_service import generate_schema
 from app.validators.schema_validator import SchemaValidator
-from app.validators.sql_syntax_validator import validate_sql_syntax
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 def generate_database_schema(
     requirement: str,
+    blueprint: dict = None,
     additional_context: str = None,
 ) -> dict:
     """
-    Main pipeline — orchestrates everything:
-    1. Detect domain + match rules
-    2. Build system prompt with injected rules
-    3. Build user prompt
-    4. Call AI
-    5. Return structured response
+    Multi-pass schema generation.
+    Generates one module at a time, stitches together.
+    Target: 80-120 tables with full depth.
     """
     start_time = time.time()
-    logger.info(f"🚀 Starting schema generation for: {requirement[:80]}...")
 
     # ── Step 1: Match rules ──────────────────────────────────────
-    logger.info("Step 1/4: Matching rules...")
     match_result = match_rules(requirement)
-
     rules = match_result["rules"]
     primary_domain = match_result["primary_domain"]
-    all_domains = match_result["all_domains"]
-    total_rules = match_result["total_rules"]
 
-    logger.info(f"  Domain: {primary_domain} | Rules matched: {total_rules}")
-
-    # ── Step 2: Build prompts ────────────────────────────────────
-    logger.info("Step 2/4: Building prompts...")
     system_prompt = build_system_prompt(rules)
-    user_prompt = build_user_prompt(
-        requirement=requirement,
-        domain=primary_domain,
-        additional_context=additional_context,
+
+    # ── Step 2: Get modules from blueprint or requirement ────────
+    if blueprint and blueprint.get("modules"):
+        modules = blueprint["modules"]
+        gst_required = blueprint.get("gst_required", False)
+        scale = blueprint.get("scale", "medium")
+        project_name = blueprint.get("project_name", "Project")
+    else:
+        # Generate blueprint on the fly
+        from app.engine.architecture_planner import generate_deep_blueprint
+        bp = generate_deep_blueprint(
+            requirement=requirement,
+            domain=primary_domain,
+            gst_required="gst" in requirement.lower(),
+            scale="medium",
+        )
+        modules = bp.get("modules", [])
+        gst_required = bp.get("gst_required", False)
+        scale = bp.get("scale", "medium")
+        project_name = bp.get("project_name", "Project")
+
+    logger.info(f"📋 Generating {len(modules)} modules...")
+
+    # ── Step 3: Generate each module separately ──────────────────
+    all_sql_parts = []
+    generated_tables = []
+
+    for i, module in enumerate(modules):
+        logger.info(
+            f"  Module {i+1}/{len(modules)}: {module['name']} "
+            f"({len(module.get('tables', []))} tables)"
+        )
+
+        module_prompt = build_module_prompt(
+            module=module,
+            domain=primary_domain,
+            gst_required=gst_required,
+            scale=scale,
+            existing_tables=generated_tables,
+        )
+
+        try:
+            response = generate_schema(
+                system_prompt=system_prompt,
+                user_prompt=module_prompt,
+            )
+            module_sql = response["content"]
+
+            # Track generated tables
+            import re
+            new_tables = re.findall(
+                r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
+                module_sql, re.IGNORECASE
+            )
+            generated_tables.extend(new_tables)
+
+            all_sql_parts.append({
+                "module": module["name"],
+                "sql": module_sql,
+                "tables": new_tables,
+            })
+
+            logger.info(
+                f"  ✅ Module '{module['name']}': "
+                f"{len(new_tables)} tables generated"
+            )
+
+        except Exception as e:
+            logger.error(f"  ❌ Module '{module['name']}' failed: {e}")
+            continue
+
+    # ── Step 4: Stitch all modules ───────────────────────────────
+    logger.info("🧵 Stitching modules together...")
+
+    combined_sql = _stitch_modules(all_sql_parts, project_name)
+
+    # ── Step 5: Validate combined schema ─────────────────────────
+    validator = SchemaValidator()
+    validation = validator.validate(combined_sql)
+    total_tables = len(validation.tables_found)
+
+    logger.info(
+        f"📊 Combined schema: {total_tables} tables | "
+        f"Score: {validation.score}/100"
     )
 
-    logger.info(f"  System prompt: {len(system_prompt)} chars")
-    logger.info(f"  User prompt:   {len(user_prompt)} chars")
+    # ── Step 6: Auto-fix if score < 80 ───────────────────────────
+    if validation.score < 80 and validation.issues:
+        logger.info("🔧 Running auto-fix pass...")
+        combined_sql, validation = _run_fix_pass(
+            combined_sql, validation, system_prompt
+        )
 
-    # ── Step 3: Generate schema ──────────────────────────────────
-    logger.info("Step 3/4: Calling AI...")
-    ai_response = generate_schema(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-    )
-
-    # ── Step 4: Package response ─────────────────────────────────
-    logger.info("Step 4/4: Packaging response...")
     elapsed = round(time.time() - start_time, 2)
 
-    response = {
-        "schema": ai_response["content"],
+    return {
+        "schema": combined_sql,
         "metadata": {
             "primary_domain": primary_domain,
-            "all_domains": all_domains,
+            "all_domains": match_result["all_domains"],
             "domain_confidence": match_result["domain_confidence"],
             "rules_applied": [
                 {
@@ -75,69 +143,146 @@ def generate_database_schema(
                 }
                 for r in rules
             ],
-            "total_rules_applied": total_rules,
+            "total_rules_applied": len(rules),
             "semantic_matches": match_result["semantic_matches"],
-            "ai_provider": ai_response["provider"],
-            "ai_model": ai_response["model"],
-            "token_usage": ai_response["usage"],
+            "ai_provider": settings.AI_PROVIDER,
+            "ai_model": settings.GROQ_MODEL,
+            "token_usage": {"input_tokens": 0, "output_tokens": 0},
             "generation_time_seconds": elapsed,
+            "modules_generated": len(all_sql_parts),
+            "tables_per_module": [
+                {"module": p["module"], "count": len(p["tables"])}
+                for p in all_sql_parts
+            ],
+        },
+        "validation": {
+            "score": validation.score,
+            "passed": validation.passed,
+            "grade": (
+                "A" if validation.score >= 90 else
+                "B" if validation.score >= 80 else
+                "C" if validation.score >= 70 else "D"
+            ),
+            "summary": validation.summary,
+            "total_issues": validation.total_issues,
+            "critical_issues": validation.critical_issues,
+            "high_issues": validation.high_issues,
+            "medium_issues": validation.medium_issues,
+            "scores_breakdown": validation.scores_breakdown,
+            "tables_found": validation.tables_found,
+            "issues": [
+                {
+                    "rule_id": i.rule_id,
+                    "rule_name": i.rule_name,
+                    "severity": i.severity,
+                    "issue": i.issue,
+                    "suggestion": i.suggestion,
+                    "table": i.table_name,
+                }
+                for i in validation.issues
+            ],
         },
     }
-    # app/services/planner_service.py
 
-    # ── Step 5: Validate schema ──────────────────────────────────
-    logger.info("Step 5/4: Validating generated schema...")
-    validator = SchemaValidator()
-    validation = validator.validate(ai_response["content"])
 
-    response["validation"] = {
-        "score":            validation.score,
-        "passed":           validation.passed,
-        "grade":            (
-            "A" if validation.score >= 90 else
-            "B" if validation.score >= 80 else
-            "C" if validation.score >= 70 else
-            "D" if validation.score >= 60 else "F"
-        ),
-        "summary":          validation.summary,
-        "total_issues":     validation.total_issues,
-        "critical_issues":  validation.critical_issues,
-        "high_issues":      validation.high_issues,
-        "medium_issues":    validation.medium_issues,
-        "scores_breakdown": validation.scores_breakdown,
-        "tables_found":     validation.tables_found,
-        "issues": [
-            {
-                "rule_id":    i.rule_id,
-                "rule_name":  i.rule_name,
-                "severity":   i.severity,
-                "issue":      i.issue,
-                "suggestion": i.suggestion,
-                "table":      i.table_name,
-            }
-            for i in validation.issues
-        ],
-    }
-    # ── SQL syntax check ─────────────────────────────────────────
-    syntax_check = validate_sql_syntax(ai_response["content"])
-    if not syntax_check["valid"]:
-        logger.warning(
-            f"SQL syntax issues: {syntax_check['issues']}"  
+def _stitch_modules(all_sql_parts: list[dict], project_name: str) -> str:
+    """Combine all module SQL into one clean file."""
+    from datetime import datetime
+
+    header = f"""-- ============================================================
+-- Project  : {project_name}
+-- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+-- Modules  : {len(all_sql_parts)}
+-- ============================================================
+
+SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
+SET time_zone = "+00:00";
+START TRANSACTION;
+
+"""
+    sections = []
+    for part in all_sql_parts:
+        section = f"""
+-- ============================================================
+-- MODULE: {part['module']}  ({len(part['tables'])} tables)
+-- ============================================================
+
+{_clean_sql(part['sql'])}
+"""
+        sections.append(section)
+
+    footer = "\nCOMMIT;\n"
+    return header + "\n".join(sections) + footer
+
+
+def _clean_sql(sql: str) -> str:
+    sql = sql.strip()
+    if "```" in sql:
+        parts = sql.split("```")
+        sql = parts[1] if len(parts) > 1 else sql
+        if sql.startswith("sql"):
+            sql = sql[3:]
+    return sql.strip()
+
+
+def _run_fix_pass(
+    sql: str,
+    validation,
+    system_prompt: str,
+) -> tuple:
+    """Single fix pass targeting specific issues."""
+    if not validation.issues:
+        return sql, validation
+
+    critical_high = [
+        i for i in validation.issues
+        if i.severity in ["critical", "high"]
+    ]
+
+    if not critical_high:
+        return sql, validation
+
+    issue_text = "\n".join(
+        f"- [{i.severity.upper()}] {i.issue} → {i.suggestion}"
+        for i in critical_high[:10]
+    )
+
+    fix_prompt = f"""Fix ONLY these specific issues in the schema below.
+Do NOT remove any tables. Do NOT simplify any columns.
+Return the COMPLETE corrected schema.
+
+ISSUES TO FIX:
+{issue_text}
+
+SCHEMA:
+{sql[:6000]}"""
+
+    try:
+        response = generate_schema(
+            system_prompt=system_prompt,
+            user_prompt=fix_prompt,
         )
-    response["syntax_check"] = syntax_check
+        fixed_sql = response["content"]
 
-    logger.info(f"📊 Validation: {validation.summary}")
-    logger.info(f"📊 Syntax Check: {syntax_check['issues']}")
-    return response
+        from app.validators.schema_validator import SchemaValidator
+        validator = SchemaValidator()
+        new_validation = validator.validate(fixed_sql)
+
+        if new_validation.score >= validation.score:
+            logger.info(
+                f"✅ Fix improved score: "
+                f"{validation.score} → {new_validation.score}"
+            )
+            return fixed_sql, new_validation
+
+    except Exception as e:
+        logger.error(f"Fix pass failed: {e}")
+
+    return sql, validation
 
 
 def get_matched_rules_only(requirement: str) -> dict:
-    """
-    Dry run — returns matched rules WITHOUT generating schema.
-    Useful for debugging and showing users which rules will apply.
-    """
     match_result = match_rules(requirement)
-
     return {
         "primary_domain": match_result["primary_domain"],
         "all_domains": match_result["all_domains"],

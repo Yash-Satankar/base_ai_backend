@@ -206,41 +206,68 @@ Please answer whichever are relevant — you can skip any that don't apply."""
 
 
 def _handle_clarifying(state: ConversationState, user_message: str) -> dict:
-    """
-    User answered clarifying questions.
-    Build blueprint and show for confirmation.
-    """
-    # Combine original requirement + clarifications
     full_requirement = f"""
 Original requirement: {state.requirement_summary}
-
 User clarifications: {user_message}
 """
     state.requirement_summary = full_requirement
     state.clarifications_done += 1
 
-    # Generate blueprint using AI
-    blueprint_response = _generate_blueprint(state, full_requirement)
+    # ── Use deep blueprint generator ─────────────────────────────
+    from app.engine.architecture_planner import generate_deep_blueprint
+    from app.engine.rule_matcher import detect_domain
 
-    # Store blueprint in state
-    state.blueprint = blueprint_response["blueprint"]
+    primary_domain, _ = detect_domain(full_requirement)
+    gst_required = any(w in full_requirement.lower()
+                       for w in ["gst", "invoice", "tax", "billing"])
+
+    scale = "medium"
+    if any(w in user_message.lower()
+           for w in ["large", "million", "enterprise", "c)"]):
+        scale = "large"
+    elif any(w in user_message.lower() for w in ["small", "a)", "100"]):
+        scale = "small"
+
+    bp_data = generate_deep_blueprint(
+        requirement=full_requirement,
+        domain=primary_domain,
+        gst_required=gst_required,
+        scale=scale,
+    )
+
+    # Convert to ProjectBlueprint
+    from app.engine.conversation_engine import ProjectBlueprint
+    from app.services.rule_service import DOMAIN_MANDATORY_RULES
+
+    state.blueprint = ProjectBlueprint(
+        project_name=bp_data.get("project_name", "My Project"),
+        description=bp_data.get("description", full_requirement[:100]),
+        domain=primary_domain,
+        all_domains=[primary_domain],
+        modules=bp_data.get("modules", []),
+        rules_to_apply=DOMAIN_MANDATORY_RULES.get(primary_domain, []),
+        scale=scale,
+        gst_required=gst_required,
+    )
     state.stage = ConversationStage.BLUEPRINT
 
-    # Format blueprint for display
     blueprint_text = _format_blueprint(state.blueprint)
+    total_tables = sum(
+        len(m.get("tables", [])) for m in state.blueprint.modules
+    )
 
     message = f"""Based on your requirements, here is your **Database Blueprint**:
 
 {blueprint_text}
 
+**This will generate approximately {total_tables} production-ready tables.**
+Each entity gets: master table + archive + lifecycle + transactions.
+
 ---
 **Does this look correct?**
-
-- Type **YES** to confirm and start generating the schema
-- Type **EDIT** followed by what you want to change
-- Type **ADD [module name]** to add a missing module
-
-Example: *"EDIT — also add an attendance tracking module"*"""
+- Type **YES** to confirm and generate
+- Type **EDIT [what to change]** to modify
+- Type **ADD [module]** to add a module"""
 
     return {
         "message": message,
@@ -323,43 +350,32 @@ def _handle_generation(state: ConversationState) -> dict:
     # Build full requirement from blueprint
     generation_requirement = _blueprint_to_requirement(state.blueprint)
 
-    best_schema = None
-    best_score = 0
-    best_validation = None
+    # ── Pass full blueprint for module-by-module generation ──────
+    blueprint_dict = _blueprint_to_dict(state.blueprint) if state.blueprint else None
 
     for attempt in range(MAX_FIX_ATTEMPTS):
         logger.info(f"🔄 Generation attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
 
-        if attempt == 0:
-            # First attempt — normal generation
-            result = generate_database_schema(
-                requirement=generation_requirement,
-            )
-        else:
-            # Fix attempt — inject previous issues into requirement
-            fix_requirement = _build_fix_requirement(
-                generation_requirement,
-                best_validation,
-                attempt,
-            )
-            result = generate_database_schema(
-                requirement=fix_requirement,
-            )
+        result = generate_database_schema(
+            requirement=generation_requirement,
+            blueprint=blueprint_dict,       # ← pass blueprint
+        )
 
         schema = result["schema"]
-        validation = validator.validate(schema)
+        validation_data = result.get("validation", {})
+
+        # Build validation object for scoring
+        from app.validators.schema_validator import ValidationResult, ValidationIssue
+        score = validation_data.get("score", 0)
+
         state.fix_attempts = attempt + 1
 
-        logger.info(f"  Score: {validation.score}/100 | Issues: {validation.total_issues}")
-
-        if validation.score > best_score:
-            best_score = validation.score
+        if score > best_score:
+            best_score = score
             best_schema = schema
-            best_validation = validation
+            best_validation_data = validation_data
 
-        # Stop if score is good enough
-        if validation.score >= 80:
-            logger.info(f"✅ Score {validation.score} >= 80 — stopping fix loop")
+        if score >= 80:
             break
 
     # Store final result

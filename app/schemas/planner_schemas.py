@@ -45,6 +45,10 @@ class GenerateSchemaRequest(BaseModel):
         description="Any extra context (tech stack, scale, special requirements)",
         example="This is for an Indian school. Must support GST invoicing."
     )
+    blueprint: Optional[dict] = Field(
+        None,
+        description="Optional pre-generated blueprint to guide schema generation"
+    )
 
 
 class MatchRulesRequest(BaseModel):
@@ -140,3 +144,48 @@ class SearchRulesResponse(BaseModel):
     query: str
     total_results: int
     rules: list[RuleDetail]
+
+
+# ── Blueprint models ─────────────────────────────────────────────
+
+class GenerateBlueprintRequest(BaseModel):
+    requirement: str = Field(
+        ...,
+        min_length=20,
+        max_length=5000,
+        description="Describe the database requirement for the blueprint",
+        example="Build a school fee management system with student records, fee collection, receipts, and payment history"
+    )
+    domain: Optional[str] = Field(
+        None,
+        description="Optional domain, automatically detected if not specified"
+    )
+    gst_required: Optional[bool] = Field(
+        None,
+        description="Optional GST requirement, automatically detected if not specified"
+    )
+    scale: Optional[str] = Field(
+        "medium",
+        description="Scale of the system (small, medium, large)"
+    )
+
+
+class BlueprintTable(BaseModel):
+    name: str
+    purpose: str
+
+
+class BlueprintModule(BaseModel):
+    name: str
+    description: str
+    tables: list[BlueprintTable]
+
+
+class GenerateBlueprintResponse(BaseModel):
+    success: bool
+    project_name: str
+    description: str
+    domain: str
+    gst_required: bool
+    scale: str
+    modules: list[BlueprintModule]

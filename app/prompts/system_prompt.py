@@ -3,126 +3,193 @@
 from datetime import datetime
 
 
-def build_system_prompt(rules: list[dict]) -> str:
-    """
-    Assembles the full system prompt by injecting
-    the retrieved rules into the base prompt.
-    """
-
+def build_system_prompt(rules: list[dict], module_name: str = None) -> str:
     rules_block = _format_rules_for_prompt(rules)
 
-    prompt = f"""You are an expert MySQL database schema architect.
-Your job is to generate production-quality MySQL schema (CREATE TABLE statements).
+    module_context = ""
+    if module_name:
+        module_context = f"\nYou are generating ONLY the '{module_name}' module right now."
 
-CRITICAL: The rules below are NOT optional. Every rule marked critical or high 
-MUST be implemented in the schema. Do not say "Not applicable" for critical/high rules.
-If a rule seems inapplicable, find a way to incorporate its intent.
+    prompt = f"""You are a senior MySQL database architect with 15 years of production experience.
+You design enterprise-grade databases used by Fortune 500 companies.
+{module_context}
+
+CRITICAL: The rules below are MANDATORY. Every rule marked critical or high MUST
+be implemented. Do not say "Not applicable". If a rule seems inapplicable, find
+a way to implement its intent.
 
 ═══════════════════════════════════════════════════════
-ACTIVE RULES — MUST FOLLOW ({len(rules)} rules)
+ACTIVE RULES ({len(rules)} rules)
 ═══════════════════════════════════════════════════════
 {rules_block}
 
 ═══════════════════════════════════════════════════════
-NON-NEGOTIABLE REQUIREMENTS — EVERY SCHEMA MUST HAVE
+MANDATORY DEPTH REQUIREMENTS — NON-NEGOTIABLE
 ═══════════════════════════════════════════════════════
 
-1. unique_id_header_all TABLE — always generate this:
-   CREATE TABLE unique_id_header_all (
-     id int AUTO_INCREMENT PRIMARY KEY,
-     table_name varchar(100) NOT NULL,
-     id_for varchar(50) NOT NULL,
-     prefix varchar(20) NOT NULL,
-     last_id varchar(15) NOT NULL,
-     created_on datetime NOT NULL,
-     modified_on datetime NOT NULL
-   );
+EVERY ENTITY in the module MUST have ALL of these:
+1. *_header_all          → master entity (15-25 columns minimum)
+2. *_archive_all         → exact mirror of header, plus archived_on datetime
+3. *_life_cycle_all      → status audit trail (previous_status, new_status, changed_by, changed_on)
+4. *_transaction_all     → event log where applicable (20+ columns)
+5. *_configuration_all   → temporal settings where applicable
 
-2. ALL FOREIGN KEYS must:
-   - Reference the `id` column (int PK), not the business ID
-   - Have named constraint: CONSTRAINT fk_childtable_parenttable
+MINIMUM COLUMNS PER TABLE:
+- _header_all:        15 columns minimum (id, business_id, 10+ domain columns, status, created_on, modified_on)
+- _transaction_all:   12 columns minimum (id, ref ids, amount/data, status, created_on, modified_on)
+- _archive_all:       Same as source + archived_on (NO unique constraints)
+- _life_cycle_all:    id, entity_id, previous_status, new_status, changed_by, reason, changed_on
 
-3. ALL INDEXES must be named:
-   - INDEX idx_tablename_columnname (column)
+NON-NEGOTIABLE COLUMNS ON EVERY TABLE:
+- id INT AUTO_INCREMENT PRIMARY KEY
+- [entity]_id VARCHAR(20) NOT NULL COMMENT 'business ID e.g. MTG-00001'
+- status INT NOT NULL COMMENT '1=active, 2=inactive, 3=...'
+- created_on DATETIME NOT NULL
+- modified_on DATETIME NOT NULL
 
-4. ALL MONEY columns: DECIMAL(10,2) — never float or double
+FINANCIAL TABLES MUST HAVE:
+- DECIMAL(10,2) for ALL money — never float
+- sgst_amount DECIMAL(10,2)
+- cgst_amount DECIMAL(10,2)
+- closing_balance DECIMAL(12,2)
+- payment_mode VARCHAR(50)
 
-5. GST: always separate cgst_amount and sgst_amount columns
+INDEXES AND CONSTRAINTS:
+- ALL foreign keys: CONSTRAINT fk_childtable_parenttable FOREIGN KEY (col) REFERENCES parent(id)
+- ALL indexes: INDEX idx_tablename_columnname (column)
+- UNIQUE on all business ID columns
 
-6. STATUS: always int with COMMENT '1=active,2=inactive,...'
+ALWAYS GENERATE unique_id_header_all:
+CREATE TABLE unique_id_header_all (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  table_name VARCHAR(100) NOT NULL,
+  id_for VARCHAR(50) NOT NULL,
+  prefix VARCHAR(20) NOT NULL,
+  last_id VARCHAR(15) NOT NULL DEFAULT '00000',
+  created_on DATETIME NOT NULL,
+  modified_on DATETIME NOT NULL
+);
 
-7. ARCHIVE TABLES: never add UNIQUE constraints — they store historical duplicates
+NEVER:
+- Use float/double for money
+- Use UNIQUE on archive tables
+- Create FK pointing to unique_id_header_all
+- Generate placeholder tables with only 3-4 columns
+- Skip archive or lifecycle tables
 
-8. TIMESTAMPS: created_on and modified_on on EVERY table
-
-# Add inside build_system_prompt, in the NON-NEGOTIABLE block:
-
-9. unique_id_header_all is a REGISTRY table only.
-   - NO other table should have a FOREIGN KEY pointing to it
-   - It is written to when generating new IDs, nothing more
-
-10. Every single table without exception needs a status column
-
-11. EVERY payment/transaction table must have:
-    - closing_balance DECIMAL(12,2)
-    - cgst_amount DECIMAL(10,2)
-    - sgst_amount DECIMAL(10,2)
-    - payment_method VARCHAR(50)
-
-12. fee_transaction_all and payment tables need status column too
-
-NAMING:
-- Master entity: *_header_all
-- Events/ledger: *_transaction_all  
-- Config: *_configuration_all
-- History: *_archive_all
-- Status audit: *_life_cycle_all
+OUTPUT FORMAT:
+- Raw MySQL CREATE TABLE statements only
+- Full column definitions with COMMENT on every column
+- All INDEX and CONSTRAINT definitions inline
+- No markdown explanation until after all SQL
 
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
     return prompt
 
 
-def build_user_prompt(
-    requirement: str,
+def build_module_prompt(
+    module: dict,
     domain: str,
-    additional_context: str = None,
+    gst_required: bool,
+    scale: str,
+    existing_tables: list[str] = None,
 ) -> str:
     """
-    Builds the user-facing prompt from their requirement.
+    Builds a focused prompt for generating one module at a time.
+    This is the key to getting deep, production-quality output.
     """
-    context_block = ""
-    if additional_context:
-        context_block = f"""
-Additional Context:
-{additional_context}
+    tables = module.get("tables", [])
+    table_names = [t["name"] for t in tables]
+    existing = existing_tables or []
+
+    existing_note = ""
+    if existing:
+        existing_note = f"""
+ALREADY GENERATED TABLES (do NOT regenerate these, only reference them in FKs):
+{chr(10).join(f'- {t}' for t in existing)}
 """
 
-    prompt = f"""Generate a complete MySQL database schema for the following requirement:
-
-DOMAIN: {domain.upper()}
-
-REQUIREMENT:
-{requirement}
-{context_block}
-
-Generate all necessary tables following the rules provided.
-Include tables for: entities, transactions, configuration, audit trails,
-and archive tables where appropriate.
-
-Return complete CREATE TABLE statements ready to run in MySQL.
+    gst_note = ""
+    if gst_required:
+        gst_note = """
+GST COMPLIANCE REQUIRED:
+- Every payment/invoice table MUST have sgst_amount DECIMAL(10,2) and cgst_amount DECIMAL(10,2)
+- Store sgst_percentage and cgst_percentage on configuration tables
 """
+
+    scale_note = {
+        "small":  "Scale: Small system. Use INT for PKs.",
+        "medium": "Scale: Medium system. Use INT for entity PKs, BIGINT for high-volume transactions.",
+        "large":  "Scale: Large system. Use BIGINT for all transaction PKs. Add composite indexes.",
+    }.get(scale, "")
+
+    prompt = f"""Generate the complete '{module['name']}' module for a {domain.replace('_', ' ').title()} system.
+
+MODULE: {module['name']}
+PURPOSE: {module.get('description', '')}
+{scale_note}
+{gst_note}
+{existing_note}
+
+TABLES TO GENERATE FOR THIS MODULE:
+{chr(10).join(f'- {t["name"]} → {t["purpose"]}' for t in tables)}
+
+FOR EVERY ENTITY IN THIS MODULE, GENERATE:
+1. The main _header_all table (15-25 columns)
+2. The _archive_all mirror table (same columns + archived_on)
+3. The _life_cycle_all status audit table
+4. Any _transaction_all event tables
+5. Any _configuration_all settings tables
+
+COLUMN DEPTH REQUIREMENTS:
+Every _header_all table must include:
+- All business-relevant fields (name, description, type, category, etc.)
+- All status fields (status, sub_status where needed)
+- All relationship FKs (with named CONSTRAINT)
+- All audit fields (created_by, modified_by, created_on, modified_on)
+- All operational fields (active counts, totals, flags)
+- All contact fields where relevant (email, mobile, address)
+- All date fields (valid_from, valid_till, scheduled_on, etc.)
+
+DO NOT generate thin tables. Every table must be production-ready.
+A developer should be able to build the application from your schema alone.
+
+Generate complete SQL now:"""
+
     return prompt
 
 
-def _format_rules_for_prompt(rules: list[dict]) -> str:
+def build_stitch_prompt(
+    all_modules_sql: list[dict],
+    project_name: str,
+) -> str:
     """
-    Format rules list into a readable block for the prompt.
-    Keeps it concise — LLM doesn't need the full JSON.
+    Final pass — review stitched schema for consistency.
     """
-    lines = []
+    table_count = sum(
+        len([l for l in m['sql'].split('\n')
+             if 'CREATE TABLE' in l.upper()])
+        for m in all_modules_sql
+    )
 
-    # Group by priority
+    return f"""Review this complete schema for '{project_name}' ({table_count} tables).
+
+Fix ONLY these issues if found:
+1. Any FK referencing a business_id VARCHAR instead of integer id
+2. Any archive table with UNIQUE constraint
+3. Any missing INDEX idx_ on FK columns
+4. Any money column using float instead of DECIMAL
+
+Do NOT remove tables. Do NOT simplify columns.
+Return the complete corrected SQL.
+
+SCHEMA:
+{chr(10).join(m['sql'] for m in all_modules_sql)}"""
+
+
+def _format_rules_for_prompt(rules: list[dict]) -> str:
+    lines = []
     priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     sorted_rules = sorted(
         rules,
@@ -132,23 +199,14 @@ def _format_rules_for_prompt(rules: list[dict]) -> str:
     current_priority = None
     for rule in sorted_rules:
         priority = rule.get("priority", "medium")
-
-        # Print priority group header
         if priority != current_priority:
             current_priority = priority
             lines.append(f"\n── {priority.upper()} PRIORITY ──")
 
         lines.append(f"\nRULE {rule['rule_id']}: {rule['rule_name']}")
-
-        if rule.get("enforce"):
-            for e in rule["enforce"][:3]:   # max 4 enforce points per rule
-                lines.append(f"  ✓ {e}")
-
+        for e in rule["enforce"][:3]:
+            lines.append(f"  ✓ {e}")
         if rule.get("avoid"):
-            for a in rule["avoid"][:1]:     # max 2 avoid points per rule
-                lines.append(f"  ✗ {a}")
-
-        if rule.get("reason"):
-            lines.append(f"  → {rule['reason'][:80]}")  # truncate long reasons
+            lines.append(f"  ✗ {rule['avoid'][0]}")
 
     return "\n".join(lines)

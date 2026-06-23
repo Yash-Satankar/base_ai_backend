@@ -128,79 +128,123 @@ def search_rules(query: str, top_k: int = None, category_filter: str = None) -> 
     Search for relevant rules given a user query.
     Returns top_k most relevant rules as dicts.
     """
-    from qdrant_client.models import QueryRequest
-
-    client = get_qdrant_client()
     k = top_k or settings.TOP_K_RULES
 
-    query_vector = embed_text(query)
+    try:
+        client = get_qdrant_client()
+        query_vector = embed_text(query)
 
-    # Optional: filter by category
-    search_filter = None
-    if category_filter:
-        search_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="category",
-                    match=MatchValue(value=category_filter)
-                )
-            ]
-        )
+        # Optional: filter by category
+        search_filter = None
+        if category_filter:
+            search_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="category",
+                        match=MatchValue(value=category_filter)
+                    )
+                ]
+            )
 
-    # ── new API (qdrant-client >= 1.7) ──────────────────────────
-    results = client.query_points(
-        collection_name=settings.QDRANT_COLLECTION_NAME,
-        query=query_vector,
-        limit=k,
-        query_filter=search_filter,
-        with_payload=True,
-    ).points
-    # ────────────────────────────────────────────────────────────
+        results = client.query_points(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            query=query_vector,
+            limit=k,
+            query_filter=search_filter,
+            with_payload=True,
+        ).points
 
-    rules = []
-    for result in results:
-        rule = result.payload
-        rule["relevance_score"] = round(result.score, 4)
-        rules.append(rule)
+        rules = []
+        for result in results:
+            rule = result.payload
+            rule["relevance_score"] = round(result.score, 4)
+            rules.append(rule)
 
-    return rules
+        return rules
+    except Exception as e:
+        logger.warning(f"⚠️ Qdrant search failed: {e}. Falling back to local rules keyword match.")
+        try:
+            local_rules = load_rules_from_file()
+            matched = []
+            query_words = set(query.lower().split())
+            for rule in local_rules:
+                if category_filter and rule.get("category") != category_filter:
+                    continue
+                
+                # Check match score based on keywords in name, category, tags, reason
+                rule_text = f"{rule.get('rule_name', '')} {rule.get('category', '')} {' '.join(rule.get('tags', []))} {rule.get('reason', '')}".lower()
+                matches = sum(1 for w in query_words if w in rule_text)
+                if matches > 0:
+                    matched.append((matches, rule))
+            
+            priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            matched.sort(
+                key=lambda x: (-x[0], priority_order.get(x[1].get("priority", "low"), 3))
+            )
+            
+            results = [x[1] for x in matched[:k]]
+            for r in results:
+                r["relevance_score"] = 0.5
+            return results
+        except Exception as fallback_err:
+            logger.error(f"❌ Local rule search fallback failed: {fallback_err}")
+            return []
 
 
 def get_rules_by_ids(rule_ids: list[int]) -> list[dict]:
     """Fetch specific rules by their IDs directly."""
-    client = get_qdrant_client()
-
-    # ── new API ──────────────────────────────────────────────────
-    results = client.retrieve(
-        collection_name=settings.QDRANT_COLLECTION_NAME,
-        ids=rule_ids,
-        with_payload=True,
-    )
-    # ────────────────────────────────────────────────────────────
-
-    return [r.payload for r in results]
+    try:
+        client = get_qdrant_client()
+        results = client.retrieve(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            ids=rule_ids,
+            with_payload=True,
+        )
+        return [r.payload for r in results]
+    except Exception as e:
+        logger.warning(f"⚠️ Qdrant retrieve failed: {e}. Falling back to local rules.json search.")
+        try:
+            local_rules = load_rules_from_file()
+            return [r for r in local_rules if r["rule_id"] in rule_ids]
+        except Exception as fallback_err:
+            logger.error(f"❌ Local rule retrieve fallback failed: {fallback_err}")
+            return []
 
 
 def get_collection_info() -> dict:
     """Get stats about the Qdrant collection."""
-    client = get_qdrant_client()
-    info = client.get_collection(settings.QDRANT_COLLECTION_NAME)
+    try:
+        client = get_qdrant_client()
+        info = client.get_collection(settings.QDRANT_COLLECTION_NAME)
 
-    # ── handle both old and new qdrant response structure ────────
-    vectors_config = info.config.params.vectors
-    if hasattr(vectors_config, 'size'):
-        vector_size = vectors_config.size
-        distance = str(vectors_config.distance)
-    else:
-        # newer qdrant returns a dict
-        vector_size = settings.EMBEDDING_DIMENSION
-        distance = "Cosine"
-    # ────────────────────────────────────────────────────────────
+        # ── handle both old and new qdrant response structure ────────
+        vectors_config = info.config.params.vectors
+        if hasattr(vectors_config, 'size'):
+            vector_size = vectors_config.size
+            distance = str(vectors_config.distance)
+        else:
+            # newer qdrant returns a dict
+            vector_size = settings.EMBEDDING_DIMENSION
+            distance = "Cosine"
 
-    return {
-        "collection_name": settings.QDRANT_COLLECTION_NAME,
-        "total_rules": info.points_count,
-        "vector_size": vector_size,
-        "distance": distance,
-        "status": str(info.status),
-    }
+        return {
+            "collection_name": settings.QDRANT_COLLECTION_NAME,
+            "total_rules": info.points_count,
+            "vector_size": vector_size,
+            "distance": distance,
+            "status": str(info.status),
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ Qdrant get_collection failed: {e}. Returning fallback stats.")
+        try:
+            local_rules = load_rules_from_file()
+            total_rules = len(local_rules)
+        except Exception:
+            total_rules = 0
+        return {
+            "collection_name": settings.QDRANT_COLLECTION_NAME,
+            "total_rules": total_rules,
+            "vector_size": settings.EMBEDDING_DIMENSION,
+            "distance": "Cosine",
+            "status": "OFFLINE_FALLBACK",
+        }
