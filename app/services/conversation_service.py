@@ -222,10 +222,10 @@ User clarifications: {user_message}
                        for w in ["gst", "invoice", "tax", "billing"])
 
     scale = "medium"
-    if any(w in user_message.lower()
-           for w in ["large", "million", "enterprise", "c)"]):
+    req_lower = full_requirement.lower()
+    if any(w in req_lower for w in ["large", "million", "enterprise", "c)"]):
         scale = "large"
-    elif any(w in user_message.lower() for w in ["small", "a)", "100"]):
+    elif any(w in req_lower for w in ["small", "a)"]) or "100" in user_message.lower():
         scale = "small"
 
     bp_data = generate_deep_blueprint(
@@ -341,132 +341,20 @@ Type **YES** to confirm, or let me know if you need more changes."""
 
 def _handle_generation(state: ConversationState) -> dict:
     """
-    Generate schema, validate, auto-fix if needed.
+    Set stage to GENERATING and return signal to start async generation on frontend.
     """
     state.stage = ConversationStage.GENERATING
-    validator = SchemaValidator()
-    MAX_FIX_ATTEMPTS = 3
+    save_session(state)
 
     # Build full requirement from blueprint
     generation_requirement = _blueprint_to_requirement(state.blueprint)
 
-    # ── Pass full blueprint for module-by-module generation ──────
-    blueprint_dict = _blueprint_to_dict(state.blueprint) if state.blueprint else None
-
-    for attempt in range(MAX_FIX_ATTEMPTS):
-        logger.info(f"🔄 Generation attempt {attempt + 1}/{MAX_FIX_ATTEMPTS}")
-
-        result = generate_database_schema(
-            requirement=generation_requirement,
-            blueprint=blueprint_dict,       # ← pass blueprint
-        )
-
-        schema = result["schema"]
-        validation_data = result.get("validation", {})
-
-        # Build validation object for scoring
-        from app.validators.schema_validator import ValidationResult, ValidationIssue
-        score = validation_data.get("score", 0)
-
-        state.fix_attempts = attempt + 1
-
-        if score > best_score:
-            best_score = score
-            best_schema = schema
-            best_validation_data = validation_data
-
-        if score >= 80:
-            break
-
-    # Store final result
-    state.schema = best_schema
-    project_name = state.blueprint.project_name if state.blueprint else "project"
-
-    grade = (
-        "A" if best_score >= 90 else
-        "B" if best_score >= 80 else
-        "C" if best_score >= 70 else "D"
-    )
-
-    sql_path = generate_sql_file(
-        schema_sql=best_schema,
-        project_name=project_name,
-        session_id=state.session_id,
-    )
-
-    pdf_path = generate_pdf_documentation(
-        schema_sql=best_schema,
-        project_name=project_name,
-        session_id=state.session_id,
-        blueprint=_blueprint_to_dict(state.blueprint) if state.blueprint else {},
-        validation={
-            "score": best_score,
-            "grade": grade,
-            "tables_found": best_validation.tables_found if best_validation else [],
-            "total_issues": best_validation.total_issues if best_validation else 0,
-            "issues": [
-                {"rule_id": i.rule_id, "severity": i.severity,
-                 "issue": i.issue, "suggestion": i.suggestion}
-                for i in (best_validation.issues if best_validation else [])
-            ],
-        },
-        metadata=result["metadata"],
-        rules_applied=result["metadata"]["rules_applied"],
-    )
-
-    state.sql_file_path = sql_path
-    state.pdf_file_path = pdf_path
-    logger.info(f"📄 SQL: {sql_path}")
-    logger.info(f"📋 PDF: {pdf_path}")
-    state.validation_score = best_score
-    state.stage = ConversationStage.COMPLETE
-
-    # Build response message
-
-    issues_text = ""
-    if best_validation and best_validation.issues:
-        issues_text = "\n\n**Minor notes:**\n" + "\n".join(
-            f"- {i.issue}" for i in best_validation.issues[:3]
-        )
-
-    message = f"""✅ **Schema Generated Successfully!**
-
-**Quality Score: {best_score}/100 — Grade {grade}**
-**Tables Generated: {len(best_validation.tables_found if best_validation else [])}**
-**Rules Applied: {result['metadata']['total_rules_applied']}**
-**Fix Attempts: {state.fix_attempts}**
-{issues_text}
-
-Your files are ready:
-📄 **schema.sql** — Run this directly in MySQL
-📋 **documentation.pdf** — Complete logic guide for developers
-
-What would you like to do?
-- Download your files
-- Ask me to explain any table
-- Start a new schema"""
-
     return {
-        "message": message,
-        "stage": state.stage,
         "session_id": state.session_id,
-        "schema": best_schema,
-        "validation": {
-            "score": best_score,
-            "grade": grade,
-            "tables_found": best_validation.tables_found if best_validation else [],
-            "total_issues": best_validation.total_issues if best_validation else 0,
-            "issues": [
-                {
-                    "rule_id": i.rule_id,
-                    "severity": i.severity,
-                    "issue": i.issue,
-                    "suggestion": i.suggestion,
-                }
-                for i in (best_validation.issues if best_validation else [])
-            ],
-        },
-        "metadata": result["metadata"],
+        "stage": state.stage,
+        "message": "🚀 Starting schema generation...",
+        "requirement": generation_requirement,
+        "blueprint": _blueprint_to_dict(state.blueprint) if state.blueprint else None,
     }
 
 

@@ -49,6 +49,10 @@ class GenerateSchemaRequest(BaseModel):
         None,
         description="Optional pre-generated blueprint to guide schema generation"
     )
+    session_id: Optional[str] = Field(
+        None,
+        description="Optional conversation session ID to link updates back to the chat"
+    )
 
 
 class MatchRulesRequest(BaseModel):
@@ -120,13 +124,57 @@ class GenerationMetadata(BaseModel):
     generation_time_seconds: float
 
 
+class GenerationSummary(BaseModel):
+    modules_planned:       int
+    modules_succeeded:     int
+    modules_failed:        int
+    failed_module_details: list[dict] = []
+    tables_planned:        int
+    tables_generated:      int
+    completeness_pct:      float
+    is_complete:           bool
+
+
 class GenerateSchemaResponse(BaseModel):
-    success: bool
-    schema_sql: str = Field(..., alias="schema")
-    metadata: GenerationMetadata
-    validation: Optional[ValidationResponse] = None
+    success:            bool
+    schema_sql:         str = Field(..., alias="schema")
+    metadata:           GenerationMetadata
+    generation_summary: Optional[GenerationSummary] = None
+    validation:         Optional[ValidationResponse] = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+# ── Job (async polling) schemas ──────────────────────────────────
+
+class JobProgressInfo(BaseModel):
+    phase:          str              # queued | generating | done | failed
+    current_module: Optional[str]
+    modules_done:   int
+    modules_total:  int
+    tables_done:    int
+    tables_planned: int
+
+
+class SubmitJobResponse(BaseModel):
+    """Returned immediately when POST /generate is called."""
+    success:    bool
+    job_id:     str
+    status:     str                  # always "queued" at submit time
+    poll_url:   str                  # convenience URL for the client
+
+
+class JobStatusResponse(BaseModel):
+    """Returned by GET /job/{job_id}."""
+    success:      bool
+    job_id:       str
+    status:       str                # queued | generating | done | failed
+    progress:     Optional[JobProgressInfo] = None
+    result:       Optional[dict]     = None   # populated when status == "done"
+    error:        Optional[str]      = None   # populated when status == "failed"
+    created_at:   Optional[str]      = None
+    started_at:   Optional[str]      = None
+    completed_at: Optional[str]      = None
 
 
 class MatchRulesResponse(BaseModel):

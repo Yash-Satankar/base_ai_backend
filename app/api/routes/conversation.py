@@ -43,6 +43,9 @@ class MessageResponse(BaseModel):
     validation: Optional[dict] = None
     metadata: Optional[dict] = None
     ready_to_generate: bool = False
+    requirement: Optional[str] = None
+    additional_context: Optional[str] = None
+    download_urls: Optional[dict] = None
 
     model_config = ConfigDict(populate_by_name=True)
 

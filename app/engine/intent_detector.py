@@ -105,6 +105,8 @@ def detect_intent(
     """
     msg_lower = message.lower().strip()
     msg_clean = re.sub(r'[^\w\s]', ' ', msg_lower)
+    words = msg_clean.split()
+    words_count = len(words)
 
     # ── Check for SQL paste ──────────────────────────────────────
     if re.search(r'create\s+table', msg_lower, re.IGNORECASE):
@@ -115,7 +117,7 @@ def detect_intent(
         )
 
     # ── Check for start over ─────────────────────────────────────
-    if _contains_phrase(msg_lower, START_OVER_SIGNALS):
+    if _contains_phrase(msg_lower, START_OVER_SIGNALS) and words_count <= 5 and state.stage != ConversationStage.INITIAL:
         return Intent(
             type=IntentType.START_OVER,
             confidence=0.9,
@@ -123,19 +125,21 @@ def detect_intent(
 
     # ── Check for download ───────────────────────────────────────
     if _contains_phrase(msg_lower, DOWNLOAD_SIGNALS):
-        file_type = "both"
-        if "sql" in msg_lower and "pdf" not in msg_lower:
-            file_type = "sql"
-        elif "pdf" in msg_lower and "sql" not in msg_lower:
-            file_type = "pdf"
-        return Intent(
-            type=IntentType.DOWNLOAD,
-            confidence=0.9,
-            sub_action=file_type,
-        )
+        # Only treat as download if we are in the complete stage or it is a very short direct command
+        if state.stage == ConversationStage.COMPLETE or words_count <= 4:
+            file_type = "both"
+            if "sql" in msg_lower and "pdf" not in msg_lower:
+                file_type = "sql"
+            elif "pdf" in msg_lower and "sql" not in msg_lower:
+                file_type = "pdf"
+            return Intent(
+                type=IntentType.DOWNLOAD,
+                confidence=0.9,
+                sub_action=file_type,
+            )
 
     # ── Check for explain request ────────────────────────────────
-    if _contains_phrase(msg_lower, EXPLAIN_SIGNALS):
+    if _contains_phrase(msg_lower, EXPLAIN_SIGNALS) and words_count <= 10:
         # Extract what they want explained
         table_match = re.search(r'(\w+_(?:header|transaction|archive|life_cycle|configuration)_all)', message)
         content = table_match.group(1) if table_match else message
@@ -153,15 +157,14 @@ def detect_intent(
     )
 
     # ── Check for regenerate ─────────────────────────────────────
-    if _contains_phrase(msg_lower, REGENERATE_SIGNALS):
+    if _contains_phrase(msg_lower, REGENERATE_SIGNALS) and words_count <= 5 and state.stage != ConversationStage.INITIAL:
         return Intent(
             type=IntentType.REGENERATE,
             confidence=0.85,
         )
 
     # ── Pure confirmation ────────────────────────────────────────
-    words = msg_clean.split()
-    if len(words) <= 3 and _contains_phrase(msg_lower, CONFIRM_SIGNALS):
+    if words_count <= 3 and _contains_phrase(msg_lower, CONFIRM_SIGNALS):
         return Intent(
             type=IntentType.CONFIRM,
             confidence=0.95,

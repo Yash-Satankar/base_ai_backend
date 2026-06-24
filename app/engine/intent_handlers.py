@@ -348,9 +348,9 @@ def handle_download_request(
 
     links = []
     if file_type in ["sql", "both"] and state.sql_file_path:
-        links.append(f"📄 **SQL File:** `/conversation/download/sql/{session_id}`")
+        links.append(f"📄 **SQL File:** `http://localhost:8000/conversation/download/sql/{session_id}`")
     if file_type in ["pdf", "both"] and state.pdf_file_path:
-        links.append(f"📋 **PDF Docs:** `/conversation/download/pdf/{session_id}`")
+        links.append(f"📋 **PDF Docs:** `http://localhost:8000/conversation/download/pdf/{session_id}`")
 
     if not links:
         return {

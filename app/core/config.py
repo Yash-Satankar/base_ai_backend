@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # AI Provider
     AI_PROVIDER: str = "groq"
-    GROQ_API_KEY: str = "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"
+    GROQ_API_KEY: str                          # no default — must be set in .env
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     # ANTHROPIC_API_KEY: str = ""
     # ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"

@@ -1,0 +1,195 @@
+```json
+{
+  "project_name": "VCM-ERP",
+  "description": "Comprehensive Vendor and Contractor Management Platform for large infrastructure companies",
+  "domain": "vendor_contractor_management",
+  "gst_required": true,
+  "scale": "large",
+  "modules": [
+    {
+      "name": "Infrastructure",
+      "description": "Core infrastructure for the platform",
+      "tables": [
+        {"name": "unique_id_header_all", "purpose": "unique identifier for all entities"},
+        {"name": "factory_reset_all", "purpose": "reset configuration for factory reset"},
+        {"name": "zone_header_all", "purpose": "master zone records"},
+        {"name": "zone_archive_all", "purpose": "historical mirror of zone_header_all"},
+        {"name": "zone_life_cycle_all", "purpose": "status change audit trail for zones"},
+        {"name": "zone_transaction_all", "purpose": "event log for zone operations"},
+        {"name": "zone_configuration_all", "purpose": "temporal settings for zones"},
+        {"name": "state_header_all", "purpose": "master state records"},
+        {"name": "state_archive_all", "purpose": "historical mirror of state_header_all"},
+        {"name": "state_life_cycle_all", "purpose": "status change audit trail for states"},
+        {"name": "state_transaction_all", "purpose": "event log for state operations"},
+        {"name": "state_configuration_all", "purpose": "temporal settings for states"},
+        {"name": "region_header_all", "purpose": "master region records"},
+        {"name": "region_archive_all", "purpose": "historical mirror of region_header_all"},
+        {"name": "region_life_cycle_all", "purpose": "status change audit trail for regions"},
+        {"name": "region_transaction_all", "purpose": "event log for region operations"},
+        {"name": "region_configuration_all", "purpose": "temporal settings for regions"},
+        {"name": "project_header_all", "purpose": "master project records"},
+        {"name": "project_archive_all", "purpose": "historical mirror of project_header_all"},
+        {"name": "project_life_cycle_all", "purpose": "status change audit trail for projects"},
+        {"name": "project_transaction_all", "purpose": "event log for project operations"},
+        {"name": "project_configuration_all", "purpose": "temporal settings for projects"},
+        {"name": "site_header_all", "purpose": "master site records"},
+        {"name": "site_archive_all", "purpose": "historical mirror of site_header_all"},
+        {"name": "site_life_cycle_all", "purpose": "status change audit trail for sites"},
+        {"name": "site_transaction_all", "purpose": "event log for site operations"},
+        {"name": "site_configuration_all", "purpose": "temporal settings for sites"}
+      ]
+    },
+    {
+      "name": "Vendor",
+      "description": "Vendor onboarding, management, and approval",
+      "tables": [
+        {"name": "vendor_header_all", "purpose": "master vendor records"},
+        {"name": "vendor_archive_all", "purpose": "historical mirror of vendor_header_all"},
+        {"name": "vendor_life_cycle_all", "purpose": "status change audit trail for vendors"},
+        {"name": "vendor_transaction_all", "purpose": "event log for vendor operations"},
+        {"name": "vendor_configuration_all", "purpose": "temporal settings for vendors"},
+        {"name": "vendor_company_details", "purpose": "vendor company details"},
+        {"name": "vendor_gst_pan_info", "purpose": "vendor GST/PAN information"},
+        {"name": "vendor_bank_details", "purpose": "vendor bank details"},
+        {"name": "vendor_service_categories", "purpose": "vendor service categories"},
+        {"name": "vendor_supporting_documents", "purpose": "vendor supporting documents"},
+        {"name": "vendor_approval_process", "purpose": "vendor approval process configuration"},
+        {"name": "vendor_document_verification", "purpose": "vendor document verification status"},
+        {"name": "vendor_finance_review", "purpose": "vendor finance review status"},
+        {"name": "vendor_final_approval", "purpose": "vendor final approval status"}
+      ]
+    },
+    {
+      "name": "Contractor",
+      "description": "Contractor registration, management, and compliance",
+      "tables": [
+        {"name": "contractor_header_all", "purpose": "master contractor records"},
+        {"name": "contractor_archive_all", "purpose": "historical mirror of contractor_header_all"},
+        {"name": "contractor_life_cycle_all", "purpose": "status change audit trail for contractors"},
+        {"name": "contractor_transaction_all", "purpose": "event log for contractor operations"},
+        {"name": "contractor_configuration_all", "purpose": "temporal settings for contractors"},
+        {"name": "contractor_personal_records", "purpose": "contractor personal records"},
+        {"name": "contractor_licenses_certifications", "purpose": "contractor licenses and certifications"},
+        {"name": "contractor_compliance_documents", "purpose": "contractor compliance documents"},
+        {"name": "contractor_expiry_tracking", "purpose": "contractor expiry tracking"},
+        {"name": "contractor_reminders", "purpose": "contractor reminders"},
+        {"name": "contractor_vendor_relationship", "purpose": "contractor vendor relationship"}
+      ]
+    },
+    {
+      "name": "Employee",
+      "description": "Employee allocation, attendance tracking, and movement history",
+      "tables": [
+        {"name": "employee_header_all", "purpose": "master employee records"},
+        {"name": "employee_archive_all", "purpose": "historical mirror of employee_header_all"},
+        {"name": "employee_life_cycle_all", "purpose": "status change audit trail for employees"},
+        {"name": "employee_transaction_all", "purpose": "event log for employee operations"},
+        {"name": "employee_configuration_all", "purpose": "temporal settings for employees"},
+        {"name": "employee_allocation_history", "purpose": "employee allocation history"},
+        {"name": "employee_attendance_records", "purpose": "employee attendance records"},
+        {"name": "employee_movement_history", "purpose": "employee movement history"},
+        {"name": "employee_gps_data", "purpose": "employee GPS data"},
+        {"name": "employee_selfie_verification", "purpose": "employee selfie verification"}
+      ]
+    },
+    {
+      "name": "Project",
+      "description": "Project assignments, tasks, and resources",
+      "tables": [
+        {"name": "project_assignment_header_all", "purpose": "master project assignments"},
+        {"name": "project_assignment_archive_all", "purpose": "historical mirror of project_assignment_header_all"},
+        {"name": "project_assignment_life_cycle_all", "purpose": "status change audit trail for project assignments"},
+        {"name": "project_assignment_transaction_all", "purpose": "event log for project assignment operations"},
+        {"name": "project_assignment_configuration_all", "purpose": "temporal settings for project assignments"},
+        {"name": "project_task_list", "purpose": "project task list"},
+        {"name": "project_resource_allocation", "purpose": "project resource allocation"},
+        {"name": "project_progress_tracking", "purpose": "project progress tracking"},
+        {"name": "project_issue_tracking", "purpose": "project issue tracking"}
+      ]
+    },
+    {
+      "name": "Finance",
+      "description": "Invoice submission, approval, payment management, and financial ledgers",
+      "tables": [
+        {"name": "invoice_submission_header_all", "purpose": "master invoice submissions"},
+        {"name": "invoice_submission_archive_all", "purpose": "historical mirror of invoice_submission_header_all"},
+        {"name": "invoice_submission_life_cycle_all", "purpose": "status change audit trail for invoice submissions"},
+        {"name": "invoice_submission_transaction_all", "purpose": "event log for invoice submission operations"},
+        {"name": "invoice_submission_configuration_all", "purpose": "temporal settings for invoice submissions"},
+        {"name": "invoice_approval_process", "purpose": "invoice approval process configuration"},
+        {"name": "invoice_payment_management", "purpose": "invoice payment management"},
+        {"name": "financial_ledger", "purpose": "financial ledger"},
+        {"name": "historical_financial_data", "purpose": "historical financial data"}
+      ]
+    },
+    {
+      "name": "Safety",
+      "description": "Safety incident reporting, lifecycle workflow, and escalation mechanisms",
+      "tables": [
+        {"name": "safety_incident_reporting_header_all", "purpose": "master safety incident reports"},
+        {"name": "safety_incident_reporting_archive_all", "purpose": "historical mirror of safety_incident_reporting_header_all"},
+        {"name": "safety_incident_reporting_life_cycle_all", "purpose": "status change audit trail for safety incident reports"},
+        {"name": "safety_incident_reporting_transaction_all", "purpose": "event log for safety incident report operations"},
+        {"name": "safety_incident_reporting_configuration_all", "purpose": "temporal settings for safety incident reports"},
+        {"name": "safety_incident_lifecycle_workflow", "purpose": "safety incident lifecycle workflow"},
+        {"name": "safety_incident_escalation_mechanisms", "purpose": "safety incident escalation mechanisms"}
+      ]
+    },
+    {
+      "name": "Document",
+      "description": "Document management, versioning, download tracking, and expiry monitoring",
+      "tables": [
+        {"name": "document_management_header_all", "purpose": "master document records"},
+        {"name": "document_management_archive_all", "purpose": "historical mirror of document_management_header_all"},
+        {"name": "document_management_life_cycle_all", "purpose": "status change audit trail for document management"},
+        {"name": "document_management_transaction_all", "purpose": "event log for document management operations"},
+        {"name": "document_management_configuration_all", "purpose": "temporal settings for document management"},
+        {"name": "document_versioning", "purpose": "document versioning"},
+        {"name": "document_download_tracking", "purpose": "document download tracking"},
+        {"name": "document_upload_history", "purpose": "document upload history"},
+        {"name": "document_expiry_monitoring", "purpose": "document expiry monitoring"}
+      ]
+    },
+    {
+      "name": "Audit",
+      "description": "Audit trails, logs, and compliance",
+      "tables": [
+        {"name": "audit_trails_header_all", "purpose": "master audit trails"},
+        {"name": "audit_trails_archive_all", "purpose": "historical mirror of audit_trails_header_all"},
+        {"name": "audit_trails_life_cycle_all", "purpose": "status change audit trail for audit trails"},
+        {"name": "audit_trails_transaction_all", "purpose": "event log for audit trail operations"},
+        {"name": "audit_trails_configuration_all", "purpose": "temporal settings for audit trails"},
+        {"name": "audit_logs", "purpose": "audit logs"},
+        {"name": "compliance_reporting", "purpose": "compliance reporting"}
+      ]
+    },
+    {
+      "name": "Notification",
+      "description": "Notifications, email, SMS, and WhatsApp",
+      "tables": [
+        {"name": "notification_header_all", "purpose": "master notification records"},
+        {"name": "notification_archive_all", "purpose": "historical mirror of notification_header_all"},
+        {"name": "notification_life_cycle_all", "purpose": "status change audit trail for notifications"},
+        {"name": "notification_transaction_all", "purpose": "event log for notification operations"},
+        {"name": "notification_configuration_all", "purpose": "temporal settings for notifications"},
+        {"name": "email_notification", "purpose": "email notification"},
+        {"name": "sms_notification", "purpose": "SMS notification"},
+        {"name": "whatsapp_notification", "purpose": "WhatsApp notification"}
+      ]
+    },
+    {
+      "name": "Configuration",
+      "description": "System configuration, settings, and parameters",
+      "tables": [
+        {"name": "system_configuration_header_all", "purpose": "master system configuration"},
+        {"name": "system_configuration_archive_all", "purpose": "historical mirror of system_configuration_header_all"},
+        {"name": "system_configuration_life_cycle_all", "purpose": "status change audit trail for system configuration"},
+        {"name": "system_configuration_transaction_all", "purpose": "event log for system configuration operations"},
+        {"name": "system_configuration_configuration_all", "purpose": "temporal settings for system configuration"},
+        {"name": "system_settings", "purpose": "system settings"},
+        {"name": "system_parameters", "purpose": "system parameters"}
+      ]
+    }
+  ]
+}
+```

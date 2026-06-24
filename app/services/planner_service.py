@@ -1,5 +1,6 @@
 # app/services/planner_service.py
 
+import re
 import time
 import logging
 from app.engine.rule_matcher import match_rules
@@ -11,8 +12,17 @@ from app.prompts.system_prompt import (
 from app.services.ai_service import generate_schema
 from app.validators.schema_validator import SchemaValidator
 from app.core.config import settings
+from app.services.file_service import generate_sql_file, generate_pdf_documentation
+from app.db.session_store import save_session, load_session
+from app.engine.conversation_engine import ConversationStage
 
 logger = logging.getLogger(__name__)
+
+# ── Key tuning constant ───────────────────────────────────────────
+# Each AI call must stay comfortably within the model's output limit.
+# llama-3.3-70b caps at 8192 output tokens ≈ 4 deep tables.
+# Keeping this at 4 prevents truncation mid-CREATE-TABLE.
+MAX_TABLES_PER_BATCH = 4
 
 
 def generate_database_schema(
@@ -22,7 +32,8 @@ def generate_database_schema(
 ) -> dict:
     """
     Multi-pass schema generation.
-    Generates one module at a time, stitches together.
+    Generates tables in small batches (MAX_TABLES_PER_BATCH per AI call),
+    stitches all batches together, validates, and auto-fixes.
     Target: 80-120 tables with full depth.
     """
     start_time = time.time()
@@ -34,14 +45,13 @@ def generate_database_schema(
 
     system_prompt = build_system_prompt(rules)
 
-    # ── Step 2: Get modules from blueprint or requirement ────────
+    # ── Step 2: Get modules from blueprint or generate one ───────
     if blueprint and blueprint.get("modules"):
         modules = blueprint["modules"]
         gst_required = blueprint.get("gst_required", False)
         scale = blueprint.get("scale", "medium")
         project_name = blueprint.get("project_name", "Project")
     else:
-        # Generate blueprint on the fly
         from app.engine.architecture_planner import generate_deep_blueprint
         bp = generate_deep_blueprint(
             requirement=requirement,
@@ -54,59 +64,100 @@ def generate_database_schema(
         scale = bp.get("scale", "medium")
         project_name = bp.get("project_name", "Project")
 
-    logger.info(f"📋 Generating {len(modules)} modules...")
+    tables_planned = sum(len(m.get("tables", [])) for m in modules)
+    logger.info(
+        f"📋 Blueprint: {len(modules)} modules, "
+        f"{tables_planned} tables planned, "
+        f"batched at {MAX_TABLES_PER_BATCH} tables/call"
+    )
 
-    # ── Step 3: Generate each module separately ──────────────────
-    all_sql_parts = []
-    generated_tables = []
+    # ── Step 3: Generate each module in small batches ────────────
+    all_sql_parts: list[dict] = []
+    generated_tables: list[str] = []
+    failed_modules: list[dict] = []
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     for i, module in enumerate(modules):
+        module_tables = module.get("tables", [])
+        batches = _batch_tables(module_tables, MAX_TABLES_PER_BATCH)
+
         logger.info(
-            f"  Module {i+1}/{len(modules)}: {module['name']} "
-            f"({len(module.get('tables', []))} tables)"
+            f"  Module {i+1}/{len(modules)}: '{module['name']}' "
+            f"— {len(module_tables)} tables → {len(batches)} batch(es)"
         )
 
-        module_prompt = build_module_prompt(
-            module=module,
-            domain=primary_domain,
-            gst_required=gst_required,
-            scale=scale,
-            existing_tables=generated_tables,
-        )
+        module_sql_parts: list[str] = []
+        module_new_tables: list[str] = []
+        module_failed_batches: list[int] = []
 
-        try:
-            response = generate_schema(
-                system_prompt=system_prompt,
-                user_prompt=module_prompt,
+        for b_idx, batch in enumerate(batches):
+            # Build a sub-module dict with only this batch's tables
+            batch_module = {
+                "name": f"{module['name']} (batch {b_idx + 1}/{len(batches)})",
+                "description": module.get("description", ""),
+                "tables": batch,
+            }
+            module_prompt = build_module_prompt(
+                module=batch_module,
+                domain=primary_domain,
+                gst_required=gst_required,
+                scale=scale,
+                existing_tables=generated_tables,
             )
-            module_sql = response["content"]
 
-            # Track generated tables
-            import re
-            new_tables = re.findall(
-                r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
-                module_sql, re.IGNORECASE
-            )
-            generated_tables.extend(new_tables)
+            try:
+                response = generate_schema(
+                    system_prompt=system_prompt,
+                    user_prompt=module_prompt,
+                    max_tokens=2000,
+                )
+                batch_sql = response["content"]
 
+                # Accumulate real token usage
+                usage = response.get("usage", {})
+                total_input_tokens  += usage.get("input_tokens", 0)
+                total_output_tokens += usage.get("output_tokens", 0)
+
+                # Track newly generated table names
+                new_tables = re.findall(
+                    r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
+                    batch_sql, re.IGNORECASE
+                )
+                generated_tables.extend(new_tables)
+                module_new_tables.extend(new_tables)
+                module_sql_parts.append(batch_sql)
+
+                logger.info(
+                    f"    ✅ Batch {b_idx+1}/{len(batches)}: "
+                    f"{len(new_tables)} tables | "
+                    f"{usage.get('input_tokens', 0)}→{usage.get('output_tokens', 0)} tokens"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"    ❌ Module '{module['name']}' batch {b_idx+1} failed: {e}"
+                )
+                module_failed_batches.append(b_idx + 1)
+
+        if module_sql_parts:
             all_sql_parts.append({
                 "module": module["name"],
-                "sql": module_sql,
-                "tables": new_tables,
+                "sql": "\n\n".join(module_sql_parts),
+                "tables": module_new_tables,
+                "batches_succeeded": len(batches) - len(module_failed_batches),
+                "batches_total": len(batches),
             })
 
-            logger.info(
-                f"  ✅ Module '{module['name']}': "
-                f"{len(new_tables)} tables generated"
-            )
-
-        except Exception as e:
-            logger.error(f"  ❌ Module '{module['name']}' failed: {e}")
-            continue
+        if module_failed_batches:
+            failed_modules.append({
+                "module": module["name"],
+                "failed_batches": module_failed_batches,
+                "total_batches": len(batches),
+            })
 
     # ── Step 4: Stitch all modules ───────────────────────────────
     logger.info("🧵 Stitching modules together...")
-
     combined_sql = _stitch_modules(all_sql_parts, project_name)
 
     # ── Step 5: Validate combined schema ─────────────────────────
@@ -115,69 +166,99 @@ def generate_database_schema(
     total_tables = len(validation.tables_found)
 
     logger.info(
-        f"📊 Combined schema: {total_tables} tables | "
-        f"Score: {validation.score}/100"
+        f"📊 Final schema: {total_tables} tables | "
+        f"Score: {validation.score}/100 | "
+        f"Tokens used: {total_input_tokens}→{total_output_tokens}"
     )
 
-    # ── Step 6: Auto-fix if score < 80 ───────────────────────────
+    # ── Step 6: Auto-fix critical/high issues ────────────────────
     if validation.score < 80 and validation.issues:
-        logger.info("🔧 Running auto-fix pass...")
+        logger.info("🔧 Running targeted auto-fix pass...")
         combined_sql, validation = _run_fix_pass(
             combined_sql, validation, system_prompt
         )
 
     elapsed = round(time.time() - start_time, 2)
 
+    # ── Build generation summary ──────────────────────────────────
+    tables_generated = total_tables
+    completeness_pct = round(
+        (tables_generated / tables_planned * 100) if tables_planned > 0 else 0, 1
+    )
+
+    generation_summary = {
+        "modules_planned":   len(modules),
+        "modules_succeeded": len(all_sql_parts),
+        "modules_failed":    len(failed_modules),
+        "failed_module_details": failed_modules,
+        "tables_planned":    tables_planned,
+        "tables_generated":  tables_generated,
+        "completeness_pct":  completeness_pct,
+        "is_complete":       len(failed_modules) == 0,
+    }
+
+    if failed_modules:
+        logger.warning(
+            f"⚠️  {len(failed_modules)} module(s) had failures: "
+            f"{[f['module'] for f in failed_modules]}"
+        )
+
     return {
         "schema": combined_sql,
         "metadata": {
-            "primary_domain": primary_domain,
-            "all_domains": match_result["all_domains"],
-            "domain_confidence": match_result["domain_confidence"],
+            "primary_domain":        primary_domain,
+            "all_domains":           match_result["all_domains"],
+            "domain_confidence":     match_result["domain_confidence"],
             "rules_applied": [
                 {
-                    "rule_id": r["rule_id"],
+                    "rule_id":   r["rule_id"],
                     "rule_name": r["rule_name"],
-                    "priority": r["priority"],
-                    "category": r["category"],
+                    "priority":  r["priority"],
+                    "category":  r["category"],
                 }
                 for r in rules
             ],
             "total_rules_applied": len(rules),
-            "semantic_matches": match_result["semantic_matches"],
-            "ai_provider": settings.AI_PROVIDER,
-            "ai_model": settings.GROQ_MODEL,
-            "token_usage": {"input_tokens": 0, "output_tokens": 0},
+            "semantic_matches":    match_result["semantic_matches"],
+            "ai_provider":         settings.AI_PROVIDER,
+            "ai_model":            settings.GROQ_MODEL,
+            "token_usage": {
+                "input_tokens":  total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "total_tokens":  total_input_tokens + total_output_tokens,
+            },
             "generation_time_seconds": elapsed,
-            "modules_generated": len(all_sql_parts),
+            "modules_generated":       len(all_sql_parts),
             "tables_per_module": [
                 {"module": p["module"], "count": len(p["tables"])}
                 for p in all_sql_parts
             ],
         },
+        "generation_summary": generation_summary,
         "validation": {
-            "score": validation.score,
-            "passed": validation.passed,
+            "score":    validation.score,
+            "passed":   validation.score >= 80,       # raised from 60 → 80
             "grade": (
                 "A" if validation.score >= 90 else
                 "B" if validation.score >= 80 else
-                "C" if validation.score >= 70 else "D"
+                "C" if validation.score >= 70 else
+                "D" if validation.score >= 60 else "F"
             ),
-            "summary": validation.summary,
-            "total_issues": validation.total_issues,
+            "summary":         validation.summary,
+            "total_issues":    validation.total_issues,
             "critical_issues": validation.critical_issues,
-            "high_issues": validation.high_issues,
-            "medium_issues": validation.medium_issues,
+            "high_issues":     validation.high_issues,
+            "medium_issues":   validation.medium_issues,
             "scores_breakdown": validation.scores_breakdown,
-            "tables_found": validation.tables_found,
+            "tables_found":     validation.tables_found,
             "issues": [
                 {
-                    "rule_id": i.rule_id,
-                    "rule_name": i.rule_name,
-                    "severity": i.severity,
-                    "issue": i.issue,
+                    "rule_id":    i.rule_id,
+                    "rule_name":  i.rule_name,
+                    "severity":   i.severity,
+                    "issue":      i.issue,
                     "suggestion": i.suggestion,
-                    "table": i.table_name,
+                    "table":      i.table_name,
                 }
                 for i in validation.issues
             ],
@@ -185,14 +266,30 @@ def generate_database_schema(
     }
 
 
+# ── Helpers ──────────────────────────────────────────────────────
+
+def _batch_tables(tables: list[dict], batch_size: int) -> list[list[dict]]:
+    """
+    Split a module's table list into batches of `batch_size`.
+    Keeps each AI call well within the model's output token limit.
+    """
+    return [
+        tables[i: i + batch_size]
+        for i in range(0, len(tables), batch_size)
+    ]
+
+
 def _stitch_modules(all_sql_parts: list[dict], project_name: str) -> str:
-    """Combine all module SQL into one clean file."""
+    """Combine all module SQL into one clean, importable file."""
     from datetime import datetime
+
+    total_tables = sum(len(p["tables"]) for p in all_sql_parts)
 
     header = f"""-- ============================================================
 -- Project  : {project_name}
 -- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 -- Modules  : {len(all_sql_parts)}
+-- Tables   : {total_tables}
 -- ============================================================
 
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
@@ -230,7 +327,11 @@ def _run_fix_pass(
     validation,
     system_prompt: str,
 ) -> tuple:
-    """Single fix pass targeting specific issues."""
+    """
+    Targeted fix pass: extracts only the problematic table blocks
+    rather than truncating the entire schema.  This works correctly
+    for large schemas that would otherwise exceed token limits.
+    """
     if not validation.issues:
         return sql, validation
 
@@ -238,31 +339,41 @@ def _run_fix_pass(
         i for i in validation.issues
         if i.severity in ["critical", "high"]
     ]
-
     if not critical_high:
         return sql, validation
 
+    # Gather the specific table names that have issues
+    problem_tables = list({
+        i.table_name for i in critical_high if i.table_name
+    })[:6]  # cap at 6 tables per fix pass to stay within token limits
+
     issue_text = "\n".join(
         f"- [{i.severity.upper()}] {i.issue} → {i.suggestion}"
-        for i in critical_high[:10]
+        for i in critical_high[:12]
     )
 
-    fix_prompt = f"""Fix ONLY these specific issues in the schema below.
+    # Extract only the relevant table blocks from the full SQL
+    targeted_sql = _extract_table_blocks(sql, problem_tables) if problem_tables else sql[:8000]
+
+    fix_prompt = f"""Fix ONLY these specific issues in the table blocks below.
 Do NOT remove any tables. Do NOT simplify any columns.
-Return the COMPLETE corrected schema.
+Return ONLY the corrected CREATE TABLE blocks — no extra commentary.
 
 ISSUES TO FIX:
 {issue_text}
 
-SCHEMA:
-{sql[:6000]}"""
+TABLE BLOCKS TO FIX:
+{targeted_sql}"""
 
     try:
         response = generate_schema(
             system_prompt=system_prompt,
             user_prompt=fix_prompt,
         )
-        fixed_sql = response["content"]
+        fixed_blocks = _clean_sql(response["content"])
+
+        # Splice fixed blocks back into the full schema
+        fixed_sql = _splice_fixed_blocks(sql, fixed_blocks, problem_tables)
 
         from app.validators.schema_validator import SchemaValidator
         validator = SchemaValidator()
@@ -270,7 +381,7 @@ SCHEMA:
 
         if new_validation.score >= validation.score:
             logger.info(
-                f"✅ Fix improved score: "
+                f"✅ Fix pass improved score: "
                 f"{validation.score} → {new_validation.score}"
             )
             return fixed_sql, new_validation
@@ -281,22 +392,374 @@ SCHEMA:
     return sql, validation
 
 
+def _extract_table_blocks(sql: str, table_names: list[str]) -> str:
+    """
+    Extract specific CREATE TABLE blocks from a large SQL string.
+    Returns only the blocks for the requested table names.
+    """
+    blocks = []
+    for name in table_names:
+        pattern = re.compile(
+            rf'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?{re.escape(name)}`?\s*\(.*?\))\s*(?:ENGINE[^;]*)?;',
+            re.IGNORECASE | re.DOTALL
+        )
+        match = pattern.search(sql)
+        if match:
+            blocks.append(match.group(0))
+    return "\n\n".join(blocks) if blocks else sql[:8000]
+
+
+def _splice_fixed_blocks(original_sql: str, fixed_blocks: str, table_names: list[str]) -> str:
+    """
+    Replace specific table blocks in the full SQL with the fixed versions.
+    If extraction/re-insertion fails, returns the original.
+    """
+    result = original_sql
+    for name in table_names:
+        fixed_pattern = re.compile(
+            rf'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?{re.escape(name)}`?\s*\(.*?\))\s*(?:ENGINE[^;]*)?;',
+            re.IGNORECASE | re.DOTALL
+        )
+        fixed_match = fixed_pattern.search(fixed_blocks)
+        orig_match  = fixed_pattern.search(result)
+        if fixed_match and orig_match:
+            result = result[:orig_match.start()] + fixed_match.group(0) + result[orig_match.end():]
+    return result
+
+
 def get_matched_rules_only(requirement: str) -> dict:
     match_result = match_rules(requirement)
     return {
-        "primary_domain": match_result["primary_domain"],
-        "all_domains": match_result["all_domains"],
+        "primary_domain":    match_result["primary_domain"],
+        "all_domains":       match_result["all_domains"],
         "domain_confidence": match_result["domain_confidence"],
-        "total_rules": match_result["total_rules"],
-        "semantic_matches": match_result["semantic_matches"],
+        "total_rules":       match_result["total_rules"],
+        "semantic_matches":  match_result["semantic_matches"],
         "rules": [
             {
-                "rule_id": r["rule_id"],
-                "rule_name": r["rule_name"],
-                "priority": r["priority"],
-                "category": r["category"],
+                "rule_id":      r["rule_id"],
+                "rule_name":    r["rule_name"],
+                "priority":     r["priority"],
+                "category":     r["category"],
                 "trigger_when": r.get("trigger_when", [])[:2],
             }
             for r in match_result["rules"]
         ],
     }
+
+# ── Async job-aware generation ────────────────────────────────────
+
+def generate_database_schema_for_job(
+    job_id: str,
+    requirement: str,
+    blueprint: dict = None,
+    additional_context: str = None,
+    session_id: str = None,
+) -> None:
+    """
+    Runs the full schema generation pipeline and keeps the job store
+    updated with real-time progress.
+
+    Designed to be called via asyncio.to_thread() so it never blocks
+    FastAPI's event loop.  Progress updates fire after every module
+    batch so the frontend can poll and show a live progress bar.
+    """
+    from app.services.job_store import get_job_store
+    store = get_job_store()
+
+    try:
+        start_time = time.time()
+
+        # ── Step 1: Match rules ──────────────────────────────────
+        match_result = match_rules(requirement)
+        rules = match_result["rules"]
+        primary_domain = match_result["primary_domain"]
+        system_prompt = build_system_prompt(rules)
+
+        # ── Step 2: Resolve blueprint ────────────────────────────
+        if blueprint and blueprint.get("modules"):
+            modules      = blueprint["modules"]
+            gst_required = blueprint.get("gst_required", False)
+            scale        = blueprint.get("scale", "medium")
+            project_name = blueprint.get("project_name", "Project")
+        else:
+            from app.engine.architecture_planner import generate_deep_blueprint
+            bp = generate_deep_blueprint(
+                requirement=requirement,
+                domain=primary_domain,
+                gst_required="gst" in requirement.lower(),
+                scale="medium",
+            )
+            modules      = bp.get("modules", [])
+            gst_required = bp.get("gst_required", False)
+            scale        = bp.get("scale", "medium")
+            project_name = bp.get("project_name", "Project")
+
+        tables_planned = sum(len(m.get("tables", [])) for m in modules)
+
+        store.mark_started(
+            job_id,
+            modules_total=len(modules),
+            tables_planned=tables_planned,
+        )
+        logger.info(
+            f"[job:{job_id[:8]}] Starting: {len(modules)} modules, "
+            f"{tables_planned} tables planned"
+        )
+
+        # ── Step 3: Generate each module in small batches ────────
+        all_sql_parts: list[dict] = []
+        generated_tables: list[str] = []
+        failed_modules: list[dict] = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+        tables_done = 0
+
+        for i, module in enumerate(modules):
+            module_tables = module.get("tables", [])
+            batches = _batch_tables(module_tables, MAX_TABLES_PER_BATCH)
+
+            logger.info(
+                f"[job:{job_id[:8]}] Module {i+1}/{len(modules)}: "
+                f"'{module['name']}' — {len(batches)} batch(es)"
+            )
+
+            module_sql_parts: list[str] = []
+            module_new_tables: list[str] = []
+            module_failed_batches: list[int] = []
+
+            for b_idx, batch in enumerate(batches):
+                batch_module = {
+                    "name": f"{module['name']} (batch {b_idx+1}/{len(batches)})",
+                    "description": module.get("description", ""),
+                    "tables": batch,
+                }
+                module_prompt = build_module_prompt(
+                    module=batch_module,
+                    domain=primary_domain,
+                    gst_required=gst_required,
+                    scale=scale,
+                    existing_tables=generated_tables,
+                )
+
+                try:
+                    response = generate_schema(
+                        system_prompt=system_prompt,
+                        user_prompt=module_prompt,
+                        max_tokens=2000,
+                    )
+                    batch_sql = response["content"]
+                    usage = response.get("usage", {})
+                    total_input_tokens  += usage.get("input_tokens", 0)
+                    total_output_tokens += usage.get("output_tokens", 0)
+
+                    new_tables = re.findall(
+                        r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
+                        batch_sql, re.IGNORECASE
+                    )
+                    generated_tables.extend(new_tables)
+                    module_new_tables.extend(new_tables)
+                    module_sql_parts.append(batch_sql)
+                    tables_done += len(new_tables)
+
+                    logger.info(
+                        f"[job:{job_id[:8]}]   Batch {b_idx+1}: "
+                        f"{len(new_tables)} tables ({usage.get('output_tokens',0)} out tokens)"
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        f"[job:{job_id[:8]}]   Batch {b_idx+1} failed: {e}"
+                    )
+                    module_failed_batches.append(b_idx + 1)
+
+            # Report progress after every module
+            store.update_progress(
+                job_id,
+                current_module=module["name"],
+                modules_done=i + 1,
+                tables_done=tables_done,
+            )
+
+            if module_sql_parts:
+                all_sql_parts.append({
+                    "module":            module["name"],
+                    "sql":               "\n\n".join(module_sql_parts),
+                    "tables":            module_new_tables,
+                    "batches_succeeded": len(batches) - len(module_failed_batches),
+                    "batches_total":     len(batches),
+                })
+
+            if module_failed_batches:
+                failed_modules.append({
+                    "module":         module["name"],
+                    "failed_batches": module_failed_batches,
+                    "total_batches":  len(batches),
+                })
+
+        # ── Step 4: Stitch & validate ────────────────────────────
+        combined_sql = _stitch_modules(all_sql_parts, project_name)
+        validator    = SchemaValidator()
+        validation   = validator.validate(combined_sql)
+        total_tables = len(validation.tables_found)
+
+        if validation.score < 80 and validation.issues:
+            combined_sql, validation = _run_fix_pass(
+                combined_sql, validation, system_prompt
+            )
+
+        elapsed = round(time.time() - start_time, 2)
+        tables_generated = total_tables
+        completeness_pct = round(
+            (tables_generated / tables_planned * 100) if tables_planned > 0 else 0, 1
+        )
+
+        result = {
+            "schema": combined_sql,
+            "metadata": {
+                "primary_domain":          primary_domain,
+                "all_domains":             match_result["all_domains"],
+                "domain_confidence":       match_result["domain_confidence"],
+                "rules_applied": [
+                    {
+                        "rule_id":   r["rule_id"],
+                        "rule_name": r["rule_name"],
+                        "priority":  r["priority"],
+                        "category":  r["category"],
+                    }
+                    for r in rules
+                ],
+                "total_rules_applied":     len(rules),
+                "semantic_matches":        match_result["semantic_matches"],
+                "ai_provider":             settings.AI_PROVIDER,
+                "ai_model":                settings.GROQ_MODEL,
+                "token_usage": {
+                    "input_tokens":  total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                    "total_tokens":  total_input_tokens + total_output_tokens,
+                },
+                "generation_time_seconds": elapsed,
+                "modules_generated":       len(all_sql_parts),
+                "tables_per_module": [
+                    {"module": p["module"], "count": len(p["tables"])}
+                    for p in all_sql_parts
+                ],
+            },
+            "generation_summary": {
+                "modules_planned":       len(modules),
+                "modules_succeeded":     len(all_sql_parts),
+                "modules_failed":        len(failed_modules),
+                "failed_module_details": failed_modules,
+                "tables_planned":        tables_planned,
+                "tables_generated":      tables_generated,
+                "completeness_pct":      completeness_pct,
+                "is_complete":           len(failed_modules) == 0,
+            },
+            "validation": {
+                "score":    validation.score,
+                "passed":   validation.score >= 80,
+                "grade": (
+                    "A" if validation.score >= 90 else
+                    "B" if validation.score >= 80 else
+                    "C" if validation.score >= 70 else
+                    "D" if validation.score >= 60 else "F"
+                ),
+                "summary":         validation.summary,
+                "total_issues":    validation.total_issues,
+                "critical_issues": validation.critical_issues,
+                "high_issues":     validation.high_issues,
+                "medium_issues":   validation.medium_issues,
+                "scores_breakdown": validation.scores_breakdown,
+                "tables_found":     validation.tables_found,
+                "issues": [
+                    {
+                        "rule_id":    i.rule_id,
+                        "rule_name":  i.rule_name,
+                        "severity":   i.severity,
+                        "issue":      i.issue,
+                        "suggestion": i.suggestion,
+                        "table":      i.table_name,
+                    }
+                    for i in validation.issues
+                ],
+            },
+        }
+
+        store.complete(job_id, result)
+        logger.info(
+            f"[job:{job_id[:8]}] Done — {tables_generated} tables, "
+            f"score {validation.score}/100, {elapsed}s elapsed"
+        )
+
+        if session_id:
+            state = load_session(session_id)
+            if state:
+                grade = (
+                    "A" if validation.score >= 90 else
+                    "B" if validation.score >= 80 else
+                    "C" if validation.score >= 70 else
+                    "D" if validation.score >= 60 else "F"
+                )
+                sql_path = generate_sql_file(
+                    schema_sql=combined_sql,
+                    project_name=project_name,
+                    session_id=session_id,
+                )
+                pdf_path = generate_pdf_documentation(
+                    schema_sql=combined_sql,
+                    project_name=project_name,
+                    session_id=session_id,
+                    blueprint=blueprint or {},
+                    validation={
+                        "score": validation.score,
+                        "grade": grade,
+                        "tables_found": validation.tables_found,
+                        "total_issues": validation.total_issues,
+                        "issues": [
+                            {
+                                "rule_id": i.rule_id,
+                                "severity": i.severity,
+                                "issue": i.issue,
+                                "suggestion": i.suggestion,
+                            }
+                            for i in validation.issues
+                        ],
+                    },
+                    metadata=result["metadata"],
+                    rules_applied=result["metadata"]["rules_applied"],
+                )
+
+                state.schema = combined_sql
+                state.validation_score = validation.score
+                state.sql_file_path = sql_path
+                state.pdf_file_path = pdf_path
+                state.stage = ConversationStage.COMPLETE
+
+                incomplete = "\n⚠️ some module(s) had errors — schema is not 100% complete." if len(failed_modules) > 0 else ""
+                summary_message = (
+                    f"✅ **Schema Generated Successfully!**\n\n"
+                    f"**Quality Score: {validation.score}/100 — Grade {grade}**\n"
+                    f"**Tables Generated: {tables_generated}**\n"
+                    f"**Rules Applied: {len(rules)}**\n"
+                    f"**Fix Attempts: {state.fix_attempts}**{incomplete}\n\n"
+                    f"Your files are ready:\n"
+                    f"📄 **schema.sql** — Run this directly in MySQL\n"
+                    f"📋 **documentation.pdf** — Complete logic guide for developers\n\n"
+                    f"What would you like to do?\n"
+                    f"- Download your files\n"
+                    f"- Ask me to explain any table\n"
+                    f"- Start a new schema"
+                )
+                state.add_message("assistant", summary_message)
+                save_session(state)
+                logger.info(f"[job:{job_id[:8]}] Conversation session {session_id} updated to COMPLETE")
+
+    except Exception as e:
+        logger.error(f"[job:{job_id[:8]}] Job failed: {e}", exc_info=True)
+        store.fail(job_id, str(e))
+        if session_id:
+            state = load_session(session_id)
+            if state:
+                state.stage = ConversationStage.CONFIRMED
+                state.add_message("assistant", f"❌ Schema generation failed: {str(e)[:100]}. You can make changes and try again.")
+                save_session(state)
