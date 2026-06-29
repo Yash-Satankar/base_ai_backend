@@ -9,7 +9,8 @@ from slowapi import _rate_limit_exceeded_handler
 from app.core.config import settings
 from app.core.logger import setup_logging
 from app.core.security import limiter
-from app.api.routes import ai, health, planner, rules, conversation
+from app.api.routes import ai, health, planner, rules, conversation, auth, projects, dashboard
+from app.db.database import init_db
 
 # ── Logging ──────────────────────────────────────────────────────
 setup_logging(debug=settings.DEBUG)
@@ -73,10 +74,16 @@ app.include_router(rules.router,         prefix="/rules",        tags=["Rules"])
 app.include_router(ai.router,            prefix="/ai",           tags=["AI"])
 app.include_router(planner.router,       prefix="/planner",      tags=["Planner"])
 app.include_router(conversation.router,  prefix="/conversation", tags=["Conversation"])
+app.include_router(auth.router,          prefix="/auth",         tags=["Auth"])
+app.include_router(projects.router,      prefix="/projects",     tags=["Projects"])
+app.include_router(dashboard.router,     prefix="/dashboard",    tags=["Dashboard"])
 
 # ── Startup ───────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
+    # Initialize the PostgreSQL metadata database
+    await init_db()
+    
     logger.info(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} started")
     logger.info(f"🤖 AI provider: {settings.AI_PROVIDER}")
     logger.info(f"📦 Qdrant: {settings.QDRANT_COLLECTION_NAME}")

@@ -21,6 +21,8 @@ def handle_start_over(state: ConversationState) -> dict:
     state.blueprint = None
     state.requirement_summary = ""
     state.clarifications_done = 0
+    state.questions_asked = []
+    state.understood_aspects = {}
     state.schema = None
     state.validation_score = None
     state.fix_attempts = 0

@@ -44,7 +44,7 @@ async def verify_api_key(
 
 # ── Input sanitisation ───────────────────────────────────────────
 
-MAX_MESSAGE_LENGTH = 5000
+MAX_MESSAGE_LENGTH = 50000
 MIN_MESSAGE_LENGTH = 2
 
 INJECTION_PATTERNS = [

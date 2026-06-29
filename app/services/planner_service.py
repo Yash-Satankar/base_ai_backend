@@ -3,6 +3,7 @@
 import re
 import time
 import logging
+import asyncio
 from app.engine.rule_matcher import match_rules
 from app.prompts.system_prompt import (
     build_system_prompt,
@@ -45,24 +46,61 @@ def generate_database_schema(
 
     system_prompt = build_system_prompt(rules)
 
-    # ── Step 2: Get modules from blueprint or generate one ───────
+    # ── Step 2: Get modules from blueprint (L1 -> L8 compilation) ──
+    l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, l7_data = None, None, None, None, None, None, None
+    council_synthesis, simulation_report, genome, benchmarks, recommendations = None, None, None, None, None
     if blueprint and blueprint.get("modules"):
         modules = blueprint["modules"]
         gst_required = blueprint.get("gst_required", False)
         scale = blueprint.get("scale", "medium")
         project_name = blueprint.get("project_name", "Project")
     else:
-        from app.engine.architecture_planner import generate_deep_blueprint
-        bp = generate_deep_blueprint(
-            requirement=requirement,
-            domain=primary_domain,
-            gst_required="gst" in requirement.lower(),
-            scale="medium",
+        from app.engine.abstraction_pipeline import (
+            generate_l1_understanding,
+            compile_l1_to_l2,
+            compile_l2_to_l3,
+            compile_l3_to_l4,
+            compile_l4_to_l5_l6_l7,
+            compile_to_l8_blueprint,
         )
-        modules = bp.get("modules", [])
-        gst_required = bp.get("gst_required", False)
-        scale = bp.get("scale", "medium")
-        project_name = bp.get("project_name", "Project")
+        l1 = generate_l1_understanding(requirement)
+        l2 = compile_l1_to_l2(l1)
+        l3 = compile_l2_to_l3(l1, l2)
+        l4 = compile_l3_to_l4(l1, l3)
+        l5, l6, l7 = compile_l4_to_l5_l6_l7(l1, l4)
+        bp_spec = compile_to_l8_blueprint(l1, l4, l5, l6, l7)
+
+        modules = [m.model_dump() for m in bp_spec.modules]
+        gst_required = bp_spec.gst_required
+        scale = bp_spec.scale
+        project_name = bp_spec.project_name
+
+        l1_data = l1.model_dump()
+        l2_data = l2.model_dump()
+        l3_data = l3.model_dump()
+        l4_data = l4.model_dump()
+        l5_data = l5.model_dump()
+        l6_data = l6.model_dump()
+        l7_data = l7.model_dump()
+
+        # Run Council, Simulation, and Genome calculations
+        from app.engine.council import run_architecture_council
+        from app.engine.simulation_engine import simulate_architecture
+        from app.engine.genome import calculate_genome, benchmark_project
+        from app.engine.recommendation_engine import generate_recommendations
+
+        council_synthesis, _ = run_architecture_council(
+            l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, l7_data, bp_spec.model_dump()
+        )
+        simulation_report = simulate_architecture(bp_spec.model_dump(), l5_data, scale)
+        genome = calculate_genome(
+            l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, bp_spec.model_dump()
+        )
+        benchmarks = benchmark_project(genome, [])
+        try:
+            recommendations = asyncio.run(generate_recommendations(bp_spec.model_dump(), None))
+        except Exception:
+            recommendations = []
 
     tables_planned = sum(len(m.get("tables", [])) for m in modules)
     logger.info(
@@ -87,6 +125,17 @@ def generate_database_schema(
             f"— {len(module_tables)} tables → {len(batches)} batch(es)"
         )
 
+        # Check for reusable component guidelines
+        component_guidelines = []
+        from app.engine.component_registry import REUSABLE_COMPONENTS
+        for table in module_tables:
+            for comp_id, comp_spec in REUSABLE_COMPONENTS.items():
+                comp_table_names = {t.name for t in comp_spec["tables"]}
+                if table.get("name") in comp_table_names:
+                    component_guidelines.append(comp_spec["sql_guideline"])
+                    break
+        extra_guidelines = "\n".join(set(component_guidelines))
+
         module_sql_parts: list[str] = []
         module_new_tables: list[str] = []
         module_failed_batches: list[int] = []
@@ -105,6 +154,8 @@ def generate_database_schema(
                 scale=scale,
                 existing_tables=generated_tables,
             )
+            if extra_guidelines:
+                module_prompt += f"\n\nREUSABLE COMPONENT SQL SPECIFICATIONS:\n{extra_guidelines}"
 
             try:
                 response = generate_schema(
@@ -126,7 +177,7 @@ def generate_database_schema(
                 )
                 generated_tables.extend(new_tables)
                 module_new_tables.extend(new_tables)
-                module_sql_parts.append(batch_sql)
+                module_sql_parts.append(_clean_sql(batch_sql))
 
                 logger.info(
                     f"    ✅ Batch {b_idx+1}/{len(batches)}: "
@@ -203,6 +254,26 @@ def generate_database_schema(
             f"{[f['module'] for f in failed_modules]}"
         )
 
+    # ── Step 7: Generate Traceability Graph ──────────────────
+    traceability_graph = {}
+    if l1_data:
+        from app.engine.explainability_engine import generate_traceability_graph
+        traceability_graph = generate_traceability_graph(
+            sql=combined_sql,
+            blueprint_json=blueprint or {},
+            l1_json=l1_data,
+            l2_json=l2_data,
+            l3_json=l3_data,
+            l4_json=l4_data,
+            rules_applied=[
+                {
+                    "rule_id":   r["rule_id"],
+                    "rule_name": r["rule_name"],
+                }
+                for r in rules
+            ]
+        )
+
     return {
         "schema": combined_sql,
         "metadata": {
@@ -233,6 +304,19 @@ def generate_database_schema(
                 {"module": p["module"], "count": len(p["tables"])}
                 for p in all_sql_parts
             ],
+            "l1_understanding": l1_data,
+            "l2_capabilities":  l2_data,
+            "l3_workflows":     l3_data,
+            "l4_entities":      l4_data,
+            "l5_relationships": l5_data,
+            "l6_lifecycles":    l6_data,
+            "l7_modules":       l7_data,
+            "traceability_graph": traceability_graph,
+            "council_synthesis": council_synthesis,
+            "simulation_report": simulation_report,
+            "genome":            genome,
+            "benchmarks":        benchmarks,
+            "proactive_recommendations": recommendations,
         },
         "generation_summary": generation_summary,
         "validation": {
@@ -447,6 +531,50 @@ def get_matched_rules_only(requirement: str) -> dict:
         ],
     }
 
+async def _persist_version_in_db(version_id: str, schema_sql: str, sql_file_path: str, pdf_file_path: str, validation_data: dict, metadata: dict) -> None:
+    """Async database operations for updating a completed schema generation run in PostgreSQL."""
+    from app.db.database import AsyncSessionLocal
+    from app.db.repositories.project_repo import ProjectRepository
+
+    async with AsyncSessionLocal() as db:
+        try:
+            repo = ProjectRepository(db)
+            await repo.complete_version(
+                version_id=version_id,
+                schema_sql=schema_sql,
+                sql_file_path=sql_file_path,
+                pdf_file_path=pdf_file_path,
+                validation=validation_data,
+                metadata=metadata
+            )
+            await db.commit()
+            logger.info(f"✅ Version {version_id} successfully persisted in PostgreSQL database")
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"❌ Failed to persist version {version_id} in PostgreSQL: {e}", exc_info=True)
+
+
+async def _fail_version_in_db(version_id: str, error_msg: str) -> None:
+    """Async database operations for marking a version as failed in PostgreSQL."""
+    from app.db.database import AsyncSessionLocal
+    from app.db.repositories.project_repo import ProjectRepository
+    from app.db.models import VersionStatus
+
+    async with AsyncSessionLocal() as db:
+        try:
+            repo = ProjectRepository(db)
+            await repo.update_version_status(
+                version_id=version_id,
+                status=VersionStatus.FAILED,
+                error=error_msg
+            )
+            await db.commit()
+            logger.info(f"❌ Version {version_id} marked as failed in PostgreSQL database")
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"❌ Failed to mark version {version_id} as failed in PostgreSQL: {e}", exc_info=True)
+
+
 # ── Async job-aware generation ────────────────────────────────────
 
 def generate_database_schema_for_job(
@@ -476,24 +604,56 @@ def generate_database_schema_for_job(
         primary_domain = match_result["primary_domain"]
         system_prompt = build_system_prompt(rules)
 
-        # ── Step 2: Resolve blueprint ────────────────────────────
+        # ── Step 2: Get modules from blueprint (L1 -> L8 compilation) ──
+        l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, l7_data = None, None, None, None, None, None, None
+        council_synthesis, simulation_report, genome, benchmarks = None, None, None, None
         if blueprint and blueprint.get("modules"):
             modules      = blueprint["modules"]
             gst_required = blueprint.get("gst_required", False)
             scale        = blueprint.get("scale", "medium")
             project_name = blueprint.get("project_name", "Project")
         else:
-            from app.engine.architecture_planner import generate_deep_blueprint
-            bp = generate_deep_blueprint(
-                requirement=requirement,
-                domain=primary_domain,
-                gst_required="gst" in requirement.lower(),
-                scale="medium",
+            from app.engine.abstraction_pipeline import (
+                generate_l1_understanding,
+                compile_l1_to_l2,
+                compile_l2_to_l3,
+                compile_l3_to_l4,
+                compile_l4_to_l5_l6_l7,
+                compile_to_l8_blueprint,
             )
-            modules      = bp.get("modules", [])
-            gst_required = bp.get("gst_required", False)
-            scale        = bp.get("scale", "medium")
-            project_name = bp.get("project_name", "Project")
+            l1 = generate_l1_understanding(requirement)
+            l2 = compile_l1_to_l2(l1)
+            l3 = compile_l2_to_l3(l1, l2)
+            l4 = compile_l3_to_l4(l1, l3)
+            l5, l6, l7 = compile_l4_to_l5_l6_l7(l1, l4)
+            bp_spec = compile_to_l8_blueprint(l1, l4, l5, l6, l7)
+
+            modules = [m.model_dump() for m in bp_spec.modules]
+            gst_required = bp_spec.gst_required
+            scale = bp_spec.scale
+            project_name = bp_spec.project_name
+
+            l1_data = l1.model_dump()
+            l2_data = l2.model_dump()
+            l3_data = l3.model_dump()
+            l4_data = l4.model_dump()
+            l5_data = l5.model_dump()
+            l6_data = l6.model_dump()
+            l7_data = l7.model_dump()
+
+            # Run Council, Simulation, and Genome calculations
+            from app.engine.council import run_architecture_council
+            from app.engine.simulation_engine import simulate_architecture
+            from app.engine.genome import calculate_genome, benchmark_project
+
+            council_synthesis, _ = run_architecture_council(
+                l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, l7_data, bp_spec.model_dump()
+            )
+            simulation_report = simulate_architecture(bp_spec.model_dump(), l5_data, scale)
+            genome = calculate_genome(
+                l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, bp_spec.model_dump()
+            )
+            benchmarks = benchmark_project(genome, [])
 
         tables_planned = sum(len(m.get("tables", [])) for m in modules)
 
@@ -524,6 +684,17 @@ def generate_database_schema_for_job(
                 f"'{module['name']}' — {len(batches)} batch(es)"
             )
 
+            # Check for reusable component guidelines
+            component_guidelines = []
+            from app.engine.component_registry import REUSABLE_COMPONENTS
+            for table in module_tables:
+                for comp_id, comp_spec in REUSABLE_COMPONENTS.items():
+                    comp_table_names = {t.name for t in comp_spec["tables"]}
+                    if table.get("name") in comp_table_names:
+                        component_guidelines.append(comp_spec["sql_guideline"])
+                        break
+            extra_guidelines = "\n".join(set(component_guidelines))
+
             module_sql_parts: list[str] = []
             module_new_tables: list[str] = []
             module_failed_batches: list[int] = []
@@ -541,6 +712,8 @@ def generate_database_schema_for_job(
                     scale=scale,
                     existing_tables=generated_tables,
                 )
+                if extra_guidelines:
+                    module_prompt += f"\n\nREUSABLE COMPONENT SQL SPECIFICATIONS:\n{extra_guidelines}"
 
                 try:
                     response = generate_schema(
@@ -559,7 +732,7 @@ def generate_database_schema_for_job(
                     )
                     generated_tables.extend(new_tables)
                     module_new_tables.extend(new_tables)
-                    module_sql_parts.append(batch_sql)
+                    module_sql_parts.append(_clean_sql(batch_sql))
                     tables_done += len(new_tables)
 
                     logger.info(
@@ -573,13 +746,20 @@ def generate_database_schema_for_job(
                     )
                     module_failed_batches.append(b_idx + 1)
 
-            # Report progress after every module
-            store.update_progress(
-                job_id,
-                current_module=module["name"],
-                modules_done=i + 1,
-                tables_done=tables_done,
-            )
+                # Report progress after EVERY batch so the frontend sees
+                # live updates even within a large module.
+                store.update_progress(
+                    job_id,
+                    current_module=f"{module['name']} (batch {b_idx+1}/{len(batches)})",
+                    modules_done=i,        # module not yet done
+                    tables_done=tables_done,
+                )
+
+                # Brief pause between batches to ease Groq rate limits
+                # (reduces 429s that cause long retry back-offs)
+                if b_idx < len(batches) - 1:
+                    import time as _time
+                    _time.sleep(0.5)
 
             if module_sql_parts:
                 all_sql_parts.append({
@@ -597,6 +777,14 @@ def generate_database_schema_for_job(
                     "total_batches":  len(batches),
                 })
 
+            # Final module-level progress update (modules_done = i+1)
+            store.update_progress(
+                job_id,
+                current_module=module["name"],
+                modules_done=i + 1,
+                tables_done=tables_done,
+            )
+
         # ── Step 4: Stitch & validate ────────────────────────────
         combined_sql = _stitch_modules(all_sql_parts, project_name)
         validator    = SchemaValidator()
@@ -606,6 +794,26 @@ def generate_database_schema_for_job(
         if validation.score < 80 and validation.issues:
             combined_sql, validation = _run_fix_pass(
                 combined_sql, validation, system_prompt
+            )
+
+        # ── Step 5: Generate Traceability Graph ──────────────────
+        traceability_graph = {}
+        if l1_data:
+            from app.engine.explainability_engine import generate_traceability_graph
+            traceability_graph = generate_traceability_graph(
+                sql=combined_sql,
+                blueprint_json=blueprint or {},
+                l1_json=l1_data,
+                l2_json=l2_data,
+                l3_json=l3_data,
+                l4_json=l4_data,
+                rules_applied=[
+                    {
+                        "rule_id":   r["rule_id"],
+                        "rule_name": r["rule_name"],
+                    }
+                    for r in rules
+                ]
             )
 
         elapsed = round(time.time() - start_time, 2)
@@ -644,6 +852,19 @@ def generate_database_schema_for_job(
                     {"module": p["module"], "count": len(p["tables"])}
                     for p in all_sql_parts
                 ],
+                "l1_understanding": l1_data,
+                "l2_capabilities":  l2_data,
+                "l3_workflows":     l3_data,
+                "l4_entities":      l4_data,
+                "l5_relationships": l5_data,
+                "l6_lifecycles":    l6_data,
+                "l7_modules":       l7_data,
+                "traceability_graph": traceability_graph,
+                "council_synthesis": council_synthesis,
+                "simulation_report": simulation_report,
+                "genome":            genome,
+                "benchmarks":        benchmarks,
+                "proactive_recommendations": [],  # Will be populated by the background save_and_learn task
             },
             "generation_summary": {
                 "modules_planned":       len(modules),
@@ -735,6 +956,48 @@ def generate_database_schema_for_job(
                 state.pdf_file_path = pdf_path
                 state.stage = ConversationStage.COMPLETE
 
+                # Persist to PostgreSQL and run continuous self-improvement in background
+                if state.version_id:
+                    async def save_and_learn():
+                        from app.db.database import AsyncSessionLocal
+                        async with AsyncSessionLocal() as db_session:
+                            # 1. Generate Recommendations & Index to Knowledge Graph
+                            from app.engine.recommendation_engine import generate_recommendations
+                            from app.engine.knowledge_graph import save_project_to_graph
+                            
+                            recs = await generate_recommendations(blueprint or {}, db_session)
+                            result["metadata"]["proactive_recommendations"] = recs
+
+                            if l1_data:
+                                await save_project_to_graph(
+                                    db_session, l1_data, l2_data, l3_data, l4_data, l5_data, l7_data, rules
+                                )
+                                await db_session.commit()
+
+                            # 2. Complete version persistence
+                            from app.db.repositories.project_repo import ProjectRepository
+                            repo = ProjectRepository(db_session)
+                            await repo.complete_version(
+                                version_id=state.version_id,
+                                schema_sql=combined_sql,
+                                sql_file_path=sql_path,
+                                pdf_file_path=pdf_path,
+                                validation=result["validation"],
+                                metadata=result["metadata"]
+                            )
+                            await db_session.commit()
+
+                            # 3. Run learning self-improvement loop
+                            from app.services.learning_service import run_self_improvement_loop
+                            await run_self_improvement_loop(state.version_id, db_session)
+                            await db_session.commit()
+
+                    try:
+                        import asyncio
+                        asyncio.run(save_and_learn())
+                    except Exception as e:
+                        logger.error(f"Failed to persist and learn in background: {e}", exc_info=True)
+
                 incomplete = "\n⚠️ some module(s) had errors — schema is not 100% complete." if len(failed_modules) > 0 else ""
                 summary_message = (
                     f"✅ **Schema Generated Successfully!**\n\n"
@@ -762,4 +1025,14 @@ def generate_database_schema_for_job(
             if state:
                 state.stage = ConversationStage.CONFIRMED
                 state.add_message("assistant", f"❌ Schema generation failed: {str(e)[:100]}. You can make changes and try again.")
+                
+                # Persist fail status to PostgreSQL if version is linked
+                if state.version_id:
+                    import asyncio
+                    try:
+                        asyncio.run(_fail_version_in_db(state.version_id, str(e)))
+                    except Exception as db_err:
+                        logger.error(f"Failed to trigger _fail_version_in_db async task: {db_err}")
+                
                 save_session(state)
+

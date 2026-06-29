@@ -2,7 +2,9 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
+pydantic[email]
 sqlalchemy
+asyncpg
 psycopg2-binary
 alembic
 python-dotenv
@@ -17,3 +19,7 @@ redis
 sqlparse
 python-multipart
 reportlab
+# Auth
+pyjwt
+bcrypt
+email-validator

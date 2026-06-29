@@ -35,7 +35,7 @@ class GenerateSchemaRequest(BaseModel):
     requirement: str = Field(
         ...,
         min_length=20,
-        max_length=5000,
+        max_length=50000,
         description="Describe the database you need",
         example="Build a school fee management system with student records, fee collection, receipts, and payment history"
     )
@@ -59,7 +59,7 @@ class MatchRulesRequest(BaseModel):
     requirement: str = Field(
         ...,
         min_length=10,
-        max_length=5000,
+        max_length=50000,
         description="Requirement text to match rules against",
     )
 
@@ -200,7 +200,7 @@ class GenerateBlueprintRequest(BaseModel):
     requirement: str = Field(
         ...,
         min_length=20,
-        max_length=5000,
+        max_length=50000,
         description="Describe the database requirement for the blueprint",
         example="Build a school fee management system with student records, fee collection, receipts, and payment history"
     )

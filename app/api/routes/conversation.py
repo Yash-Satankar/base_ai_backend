@@ -17,6 +17,10 @@ from app.core.security import (
     verify_api_key,
     sanitise_input,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.database import get_db
+from app.core.auth import get_current_user_optional
+from app.db.models import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,8 +56,13 @@ class MessageResponse(BaseModel):
 
 @router.post("/start")
 @limiter.limit("10/hour")          # max 10 new sessions per hour per IP
-async def start_conversation(request: Request):
-    state = create_session()
+async def start_conversation(
+    request: Request,
+    project_id: Optional[str] = None,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db)
+):
+    state = await create_session(db, current_user, project_id)
     return StartSessionResponse(
         session_id=state.session_id,
         message="Hello! Tell me about the database you want to build.",
@@ -66,7 +75,8 @@ async def start_conversation(request: Request):
 async def send_message(
     request: Request,
     body: MessageRequest,
-    # api_key: str = Depends(verify_api_key),  # ← uncomment when ready
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db)
 ):
     # Sanitise input
     clean_message = sanitise_input(body.message)
@@ -79,10 +89,11 @@ async def send_message(
         )
 
     try:
-        response = process_message(body.session_id, clean_message)
+        response = await process_message(body.session_id, clean_message, db, current_user)
         return MessageResponse(
             **response,
         )
+
     except HTTPException:
         raise
     except Exception as e:

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Security
     MASTER_API_KEY: str = ""
     ALLOWED_ORIGINS: str = "http://localhost:3000"
+    JWT_SECRET: str = "supersecretjwtkeyforlocaldevenvironmentchangeinproduction"
+    JWT_ALGORITHM: str = "HS256"
+    TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
 
     # Embedding
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"

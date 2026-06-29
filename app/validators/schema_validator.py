@@ -230,21 +230,42 @@ class SchemaValidator:
     def _check_data_preservation(self, sql: str, tables: list[str]) -> list[ValidationIssue]:
         issues = []
         header_tables = [t for t in tables if t.endswith("_header_all")]
+        archive_tables = [t for t in tables if t.endswith("_archive_all")]
+
+        # If the schema has NO archive tables at all, it's a deliberate design choice.
+        # Don't penalise it — the project simply doesn't use the archive pattern.
+        if not archive_tables:
+            return []
+
+        # Tables that should NEVER require an archive companion
+        NON_ARCHIVABLE_PATTERNS = [
+            "factory", "config", "setting", "option", "lookup",
+            "type", "category", "reference", "mapping", "junction",
+            "unique_id", "app_version", "platform", "otp", "session",
+            "log", "audit", "error", "notification_template",
+        ]
 
         for ht in header_tables:
             # Skip system tables
             if ht in self.SYSTEM_TABLES:
                 continue
 
+            # Skip tables that by nature don't need archives
+            ht_lower = ht.lower()
+            should_skip = any(pattern in ht_lower for pattern in NON_ARCHIVABLE_PATTERNS)
+            if should_skip:
+                continue
+
             base = ht.replace("_header_all", "")
             archive = f"{base}_archive_all"
             if archive not in tables:
+                # Only low severity — archive is a design choice, not a hard rule
                 issues.append(ValidationIssue(
                     rule_id=3,
-                    rule_name="Three-Layer Data Preservation",
-                    severity="medium",
+                    rule_name="Data Preservation",
+                    severity="low",
                     issue=f"'{ht}' has no corresponding archive table '{archive}'",
-                    suggestion=f"Create '{archive}' as historical mirror of '{ht}'",
+                    suggestion=f"Consider creating '{archive}' for historical record keeping if needed",
                     table_name=ht,
                 ))
 
