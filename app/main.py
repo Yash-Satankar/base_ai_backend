@@ -9,7 +9,7 @@ from slowapi import _rate_limit_exceeded_handler
 from app.core.config import settings
 from app.core.logger import setup_logging
 from app.core.security import limiter
-from app.api.routes import ai, health, planner, rules, conversation, auth, projects, dashboard
+from app.api.routes import ai, health, planner, rules, conversation, auth, projects, dashboard, developer_api, validation, learning
 from app.db.database import init_db
 
 # ── Logging ──────────────────────────────────────────────────────
@@ -77,6 +77,9 @@ app.include_router(conversation.router,  prefix="/conversation", tags=["Conversa
 app.include_router(auth.router,          prefix="/auth",         tags=["Auth"])
 app.include_router(projects.router,      prefix="/projects",     tags=["Projects"])
 app.include_router(dashboard.router,     prefix="/dashboard",    tags=["Dashboard"])
+app.include_router(developer_api.router, prefix="/api/v1",       tags=["Developer API"])
+app.include_router(validation.router,    prefix="/validation",   tags=["Validation"])
+app.include_router(learning.router,      prefix="/learning",     tags=["Learning"])
 
 # ── Startup ───────────────────────────────────────────────────────
 @app.on_event("startup")

@@ -16,6 +16,12 @@ from app.core.config import settings
 from app.services.file_service import generate_sql_file, generate_pdf_documentation
 from app.db.session_store import save_session, load_session
 from app.engine.conversation_engine import ConversationStage
+from app.services.planner_helpers import (
+    batch_tables,
+    stitch_modules,
+    clean_sql,
+    run_fix_pass
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +124,7 @@ def generate_database_schema(
 
     for i, module in enumerate(modules):
         module_tables = module.get("tables", [])
-        batches = _batch_tables(module_tables, MAX_TABLES_PER_BATCH)
+        batches = batch_tables(module_tables, MAX_TABLES_PER_BATCH)
 
         logger.info(
             f"  Module {i+1}/{len(modules)}: '{module['name']}' "
@@ -177,7 +183,7 @@ def generate_database_schema(
                 )
                 generated_tables.extend(new_tables)
                 module_new_tables.extend(new_tables)
-                module_sql_parts.append(_clean_sql(batch_sql))
+                module_sql_parts.append(clean_sql(batch_sql))
 
                 logger.info(
                     f"    ✅ Batch {b_idx+1}/{len(batches)}: "
@@ -209,7 +215,7 @@ def generate_database_schema(
 
     # ── Step 4: Stitch all modules ───────────────────────────────
     logger.info("🧵 Stitching modules together...")
-    combined_sql = _stitch_modules(all_sql_parts, project_name)
+    combined_sql = stitch_modules(all_sql_parts, project_name)
 
     # ── Step 5: Validate combined schema ─────────────────────────
     validator = SchemaValidator()
@@ -225,7 +231,7 @@ def generate_database_schema(
     # ── Step 6: Auto-fix critical/high issues ────────────────────
     if validation.score < 80 and validation.issues:
         logger.info("🔧 Running targeted auto-fix pass...")
-        combined_sql, validation = _run_fix_pass(
+        combined_sql, validation = run_fix_pass(
             combined_sql, validation, system_prompt
         )
 
@@ -348,167 +354,6 @@ def generate_database_schema(
             ],
         },
     }
-
-
-# ── Helpers ──────────────────────────────────────────────────────
-
-def _batch_tables(tables: list[dict], batch_size: int) -> list[list[dict]]:
-    """
-    Split a module's table list into batches of `batch_size`.
-    Keeps each AI call well within the model's output token limit.
-    """
-    return [
-        tables[i: i + batch_size]
-        for i in range(0, len(tables), batch_size)
-    ]
-
-
-def _stitch_modules(all_sql_parts: list[dict], project_name: str) -> str:
-    """Combine all module SQL into one clean, importable file."""
-    from datetime import datetime
-
-    total_tables = sum(len(p["tables"]) for p in all_sql_parts)
-
-    header = f"""-- ============================================================
--- Project  : {project_name}
--- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
--- Modules  : {len(all_sql_parts)}
--- Tables   : {total_tables}
--- ============================================================
-
-SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
-SET time_zone = "+00:00";
-START TRANSACTION;
-
-"""
-    sections = []
-    for part in all_sql_parts:
-        section = f"""
--- ============================================================
--- MODULE: {part['module']}  ({len(part['tables'])} tables)
--- ============================================================
-
-{_clean_sql(part['sql'])}
-"""
-        sections.append(section)
-
-    footer = "\nCOMMIT;\n"
-    return header + "\n".join(sections) + footer
-
-
-def _clean_sql(sql: str) -> str:
-    sql = sql.strip()
-    if "```" in sql:
-        parts = sql.split("```")
-        sql = parts[1] if len(parts) > 1 else sql
-        if sql.startswith("sql"):
-            sql = sql[3:]
-    return sql.strip()
-
-
-def _run_fix_pass(
-    sql: str,
-    validation,
-    system_prompt: str,
-) -> tuple:
-    """
-    Targeted fix pass: extracts only the problematic table blocks
-    rather than truncating the entire schema.  This works correctly
-    for large schemas that would otherwise exceed token limits.
-    """
-    if not validation.issues:
-        return sql, validation
-
-    critical_high = [
-        i for i in validation.issues
-        if i.severity in ["critical", "high"]
-    ]
-    if not critical_high:
-        return sql, validation
-
-    # Gather the specific table names that have issues
-    problem_tables = list({
-        i.table_name for i in critical_high if i.table_name
-    })[:6]  # cap at 6 tables per fix pass to stay within token limits
-
-    issue_text = "\n".join(
-        f"- [{i.severity.upper()}] {i.issue} → {i.suggestion}"
-        for i in critical_high[:12]
-    )
-
-    # Extract only the relevant table blocks from the full SQL
-    targeted_sql = _extract_table_blocks(sql, problem_tables) if problem_tables else sql[:8000]
-
-    fix_prompt = f"""Fix ONLY these specific issues in the table blocks below.
-Do NOT remove any tables. Do NOT simplify any columns.
-Return ONLY the corrected CREATE TABLE blocks — no extra commentary.
-
-ISSUES TO FIX:
-{issue_text}
-
-TABLE BLOCKS TO FIX:
-{targeted_sql}"""
-
-    try:
-        response = generate_schema(
-            system_prompt=system_prompt,
-            user_prompt=fix_prompt,
-        )
-        fixed_blocks = _clean_sql(response["content"])
-
-        # Splice fixed blocks back into the full schema
-        fixed_sql = _splice_fixed_blocks(sql, fixed_blocks, problem_tables)
-
-        from app.validators.schema_validator import SchemaValidator
-        validator = SchemaValidator()
-        new_validation = validator.validate(fixed_sql)
-
-        if new_validation.score >= validation.score:
-            logger.info(
-                f"✅ Fix pass improved score: "
-                f"{validation.score} → {new_validation.score}"
-            )
-            return fixed_sql, new_validation
-
-    except Exception as e:
-        logger.error(f"Fix pass failed: {e}")
-
-    return sql, validation
-
-
-def _extract_table_blocks(sql: str, table_names: list[str]) -> str:
-    """
-    Extract specific CREATE TABLE blocks from a large SQL string.
-    Returns only the blocks for the requested table names.
-    """
-    blocks = []
-    for name in table_names:
-        pattern = re.compile(
-            rf'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?{re.escape(name)}`?\s*\(.*?\))\s*(?:ENGINE[^;]*)?;',
-            re.IGNORECASE | re.DOTALL
-        )
-        match = pattern.search(sql)
-        if match:
-            blocks.append(match.group(0))
-    return "\n\n".join(blocks) if blocks else sql[:8000]
-
-
-def _splice_fixed_blocks(original_sql: str, fixed_blocks: str, table_names: list[str]) -> str:
-    """
-    Replace specific table blocks in the full SQL with the fixed versions.
-    If extraction/re-insertion fails, returns the original.
-    """
-    result = original_sql
-    for name in table_names:
-        fixed_pattern = re.compile(
-            rf'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?{re.escape(name)}`?\s*\(.*?\))\s*(?:ENGINE[^;]*)?;',
-            re.IGNORECASE | re.DOTALL
-        )
-        fixed_match = fixed_pattern.search(fixed_blocks)
-        orig_match  = fixed_pattern.search(result)
-        if fixed_match and orig_match:
-            result = result[:orig_match.start()] + fixed_match.group(0) + result[orig_match.end():]
-    return result
 
 
 def get_matched_rules_only(requirement: str) -> dict:
@@ -677,7 +522,7 @@ def generate_database_schema_for_job(
 
         for i, module in enumerate(modules):
             module_tables = module.get("tables", [])
-            batches = _batch_tables(module_tables, MAX_TABLES_PER_BATCH)
+            batches = batch_tables(module_tables, MAX_TABLES_PER_BATCH)
 
             logger.info(
                 f"[job:{job_id[:8]}] Module {i+1}/{len(modules)}: "
@@ -820,6 +665,18 @@ def generate_database_schema_for_job(
         tables_generated = total_tables
         completeness_pct = round(
             (tables_generated / tables_planned * 100) if tables_planned > 0 else 0, 1
+        )
+
+        # Log structured telemetry
+        from app.core.telemetry import TelemetryManager
+        TelemetryManager.log_operation(
+            operation="generate_database_schema_for_job",
+            duration_sec=elapsed,
+            tokens={
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens
+            },
+            model=settings.GROQ_MODEL
         )
 
         result = {

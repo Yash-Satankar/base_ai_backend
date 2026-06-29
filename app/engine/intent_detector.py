@@ -74,6 +74,12 @@ REGENERATE_SIGNALS = [
     "do it again", "another attempt", "retry",
     "not happy", "don't like", "dont like",
     "different schema", "try differently",
+    # Resume / continue after a timeout
+    "continue generating", "continue generation", "continue",
+    "resume", "resume generating", "resume generation",
+    "keep going", "keep generating", "carry on",
+    "finish generating", "finish generation",
+    "try again", "try once more",
 ]
 
 DOWNLOAD_SIGNALS = [
@@ -157,7 +163,7 @@ def detect_intent(
     )
 
     # ── Check for regenerate ─────────────────────────────────────
-    if _contains_phrase(msg_lower, REGENERATE_SIGNALS) and words_count <= 5 and state.stage != ConversationStage.INITIAL:
+    if _contains_phrase(msg_lower, REGENERATE_SIGNALS) and state.stage != ConversationStage.INITIAL:
         return Intent(
             type=IntentType.REGENERATE,
             confidence=0.85,

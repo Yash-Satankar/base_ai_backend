@@ -4,7 +4,7 @@ Registry of reusable, configurable Architecture Components.
 Provides standard, production-grade blueprints for common enterprise engines.
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List
 from app.schemas.blueprint_schema import BlueprintTableSpec, TableType
 
 REUSABLE_COMPONENTS: Dict[str, Dict[str, Any]] = {
@@ -160,6 +160,3 @@ REUSABLE_COMPONENTS: Dict[str, Dict[str, Any]] = {
 """
     }
 }
-
-import typing
-from typing import Any

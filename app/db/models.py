@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import (
-    String, Text, Integer, Boolean, DateTime, ForeignKey,
+    String, Text, Integer, Float, Boolean, DateTime, ForeignKey,
     Enum as SAEnum, JSON, UniqueConstraint, Index
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -78,7 +78,7 @@ class User(Base):
     api_keys:   Mapped[list["ApiKey"]]   = relationship("ApiKey",   back_populates="user", lazy="noload")
     projects:   Mapped[list["Project"]]  = relationship("Project",  back_populates="owner", lazy="noload",
                                                          foreign_keys="Project.owner_id")
-    memberships: Mapped[list["ProjectMember"]] = relationship("ProjectMember", back_populates="user", lazy="noload")
+    memberships: Mapped[list["ProjectMember"]] = relationship("ProjectMember", back_populates="user", lazy="noload", foreign_keys="ProjectMember.user_id")
 
     __table_args__ = (
         Index("idx_users_email", "email"),
@@ -383,3 +383,179 @@ class GraphEdge(Base):
         Index("idx_graph_edges_source", "source_id"),
         Index("idx_graph_edges_target", "target_id"),
     )
+
+
+# ── Architecture Version Control (Git) ───────────────────────────
+
+class ArchitectureCommit(Base):
+    """
+    Represents a specific snapshot (commit) of the L8 architecture blueprint.
+    Acts as the source of truth for version-controlled design history.
+    """
+    __tablename__ = "architecture_commits"
+
+    id:          Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id:  Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    parent_id:   Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("architecture_commits.id"), nullable=True)
+    author_id:   Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    message:     Mapped[str]      = mapped_column(String(255), nullable=False)
+    blueprint:   Mapped[dict]     = mapped_column(JSON, nullable=False)                    # The full L8 blueprint JSON
+    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class ArchitectureBranch(Base):
+    """
+    A Git-like branch pointing to a specific commit head.
+    """
+    __tablename__ = "architecture_branches"
+
+    id:          Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id:  Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name:        Mapped[str]      = mapped_column(String(100), nullable=False)             # "main", "feature/auth"
+    commit_id:   Mapped[str]      = mapped_column(String(36), ForeignKey("architecture_commits.id"), nullable=False)
+    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_project_branch_name"),
+    )
+
+
+class ArchitecturePullRequest(Base):
+    """
+    A proposal to merge changes from a source branch to a target branch.
+    Includes reviewer assignments and status tracking.
+    """
+    __tablename__ = "architecture_pull_requests"
+
+    id:            Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id:    Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    title:         Mapped[str]      = mapped_column(String(255), nullable=False)
+    description:   Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_branch: Mapped[str]      = mapped_column(String(100), nullable=False)
+    target_branch: Mapped[str]      = mapped_column(String(100), nullable=False)
+    status:        Mapped[str]      = mapped_column(String(20), default="open", nullable=False)  # "open" | "merged" | "closed"
+    author_id:     Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    reviewer_id:   Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class ArchitectureComment(Base):
+    """
+    Inline code/table comments on a Pull Request.
+    """
+    __tablename__ = "architecture_comments"
+
+    id:          Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    pr_id:       Mapped[str]      = mapped_column(String(36), ForeignKey("architecture_pull_requests.id", ondelete="CASCADE"), nullable=False)
+    table_name:  Mapped[Optional[str]] = mapped_column(String(255), nullable=True)            # Target table commented on
+    column_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)            # Target column commented on
+    author_id:   Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    content:     Mapped[str]      = mapped_column(Text, nullable=False)
+    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+# ── Architecture Package Registry ────────────────────────────────
+
+class ArchitecturePackage(Base):
+    """
+    A reusable architecture package published to the marketplace.
+    Can be public or private, supports versioning and dependency lists.
+    """
+    __tablename__ = "architecture_packages"
+
+    id:           Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    name:         Mapped[str]      = mapped_column(String(100), nullable=False)             # "LedgerCore"
+    version:      Mapped[str]      = mapped_column(String(20), nullable=False)              # "1.2.0"
+    description:  Mapped[str]      = mapped_column(Text, nullable=False)
+    blueprint:    Mapped[dict]     = mapped_column(JSON, nullable=False)                    # The component blueprint spec
+    dependencies: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)                # {"AuditCore": "^1.0.0"}
+    is_public:    Mapped[bool]     = mapped_column(Boolean, default=True, nullable=False)
+    owner_id:     Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    downloads:    Mapped[int]      = mapped_column(Integer, default=0, nullable=False)
+    rating_avg:   Mapped[float]    = mapped_column(Float, default=5.0, nullable=False)
+    created_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_package_name_version"),
+        Index("idx_arch_packages_owner", "owner_id"),
+    )
+
+
+# APIKey is already defined above as ApiKey (line 90)
+
+
+# ── Competitive Benchmarking & Validation ───────────────────────
+
+class BenchmarkRun(Base):
+    """
+    Stores the results of a competitive benchmark run comparing BaseAI against generic LLMs.
+    """
+    __tablename__ = "benchmark_runs"
+
+    id:               Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    requirement_name: Mapped[str]      = mapped_column(String(255), nullable=False)           # e.g., "E-Commerce Ledger"
+    provider:         Mapped[str]      = mapped_column(String(50), nullable=False)            # "base_ai" | "claude_3_5" | "gpt_4o"
+    overall_score:    Mapped[float]    = mapped_column(Float, nullable=False)
+    metrics:          Mapped[dict]     = mapped_column(JSON, nullable=False)                  # Normalization, audit, etc.
+    blueprint:        Mapped[dict]     = mapped_column(JSON, nullable=False)
+    created_at:       Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class RuleAnalytics(Base):
+    """
+    Tracks the real-world effectiveness and trigger rates of architectural rules.
+    """
+    __tablename__ = "rule_analytics"
+
+    id:               Mapped[str]   = mapped_column(String(36), primary_key=True, default=_uuid)
+    rule_id:          Mapped[str]   = mapped_column(String(100), unique=True, nullable=False)
+    times_triggered:  Mapped[int]   = mapped_column(Integer, default=0, nullable=False)
+    times_ignored:    Mapped[int]   = mapped_column(Integer, default=0, nullable=False)
+    avg_score_impact: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+
+# ── Customer Intelligence & Continuous Learning ──────────────────
+
+class RecommendationFeedback(Base):
+    """
+    Logs user actions on AI recommendations (Accepted, Modified, Rejected, Ignored).
+    Used to calculate recommendation quality and drive learning proposals.
+    """
+    __tablename__ = "recommendation_feedback"
+
+    id:                  Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id:          Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    recommendation_type: Mapped[str]      = mapped_column(String(50), nullable=False)           # "table" | "relationship" | "component"
+    item_name:           Mapped[str]      = mapped_column(String(255), nullable=False)          # e.g., "PatientConsent"
+    action:              Mapped[str]      = mapped_column(String(20), nullable=False)           # "accepted" | "modified" | "rejected" | "ignored"
+    user_id:             Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    created_at:          Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class LearningProposal(Base):
+    """
+    Generated by the learning engine when patterns emerge from user feedback.
+    Must be approved by an administrator before becoming an active rule.
+    """
+    __tablename__ = "learning_proposals"
+
+    id:               Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    pattern_type:     Mapped[str]      = mapped_column(String(50), nullable=False)           # "table_association" | "naming_convention"
+    suggested_rule:   Mapped[dict]     = mapped_column(JSON, nullable=False)                 # The rule definition JSON
+    status:           Mapped[str]      = mapped_column(String(20), default="pending", nullable=False) # "pending" | "approved" | "rejected"
+    confidence_score: Mapped[float]    = mapped_column(Float, nullable=False)
+    created_at:       Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class OrganizationMemory(Base):
+    """
+    Maintains an organization's specific architectural style and naming preferences.
+    Injected into the L1 system prompt for all projects in the organization.
+    """
+    __tablename__ = "organization_memories"
+
+    id:                   Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id:               Mapped[str]      = mapped_column(String(100), unique=True, nullable=False)
+    naming_style:         Mapped[str]      = mapped_column(String(100), default="standard")      # e.g., "suffix_header_all"
+    preferred_components: Mapped[dict]     = mapped_column(JSON, default=dict, nullable=False)   # Preferred packages
+    updated_at:           Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)

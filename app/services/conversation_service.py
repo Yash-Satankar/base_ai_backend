@@ -214,6 +214,28 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
     elif state.stage == ConversationStage.CONFIRMED:
         response = _handle_generation(state)
 
+    elif state.stage == ConversationStage.GENERATING:
+        # User sent a message while generation is in progress or after a timeout failure.
+        # REGENERATE intent (continue/retry/resume) re-triggers generation.
+        if intent.type == IntentType.REGENERATE:
+            state.schema = None
+            state.validation_score = None
+            state.fix_attempts = 0
+            state.sql_file_path = None
+            state.pdf_file_path = None
+            state.stage = ConversationStage.CONFIRMED
+            response = _handle_generation(state)
+        else:
+            response = {
+                "message": (
+                    "⏳ Schema generation is still in progress — please wait.\n\n"
+                    "If it seems stuck or timed out, type **continue generating** or **retry** "
+                    "to start a fresh generation attempt."
+                ),
+                "stage": state.stage,
+                "session_id": state.session_id,
+            }
+
     elif state.stage == ConversationStage.COMPLETE:
         if intent.type == IntentType.CONFIRM:
             response = handle_download_request(state, intent)

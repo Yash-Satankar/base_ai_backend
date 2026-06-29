@@ -41,6 +41,9 @@ def get_groq_client() -> Groq:
 # ───────────────────────────────────────────────────────────────
 
 
+from app.core.resilience import retry_on_failure_sync
+
+@retry_on_failure_sync(retries=3, delay=1.0, backoff=2.0)
 def generate_schema(
     system_prompt: str,
     user_prompt: str,

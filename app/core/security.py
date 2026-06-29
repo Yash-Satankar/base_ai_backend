@@ -18,12 +18,17 @@ limiter = Limiter(
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.database import get_db
+from app.db.repositories.user_repo import UserRepository
+
 async def verify_api_key(
     api_key: str = Security(api_key_header),
+    db: AsyncSession = Depends(get_db)
 ) -> str:
     """
-    Verify the API key in the X-API-Key header.
-    Returns the key if valid, raises 401/403 if not.
+    Verify the API key in the X-API-Key header against the master key
+    and the database-backed ApiKey registry via UserRepository.
     """
     if not api_key:
         raise HTTPException(
@@ -32,11 +37,19 @@ async def verify_api_key(
             headers={"WWW-Authenticate": "ApiKey"},
         )
 
-    if api_key != settings.MASTER_API_KEY:
+    # 1. Check Master Key fallback
+    if api_key == settings.MASTER_API_KEY:
+        return api_key
+
+    # 2. Check Database Keys via UserRepository
+    repo = UserRepository(db)
+    user = await repo.verify_api_key(api_key)
+
+    if not user:
         logger.warning(f"Invalid API key attempt: {api_key[:8]}...")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid API key.",
+            detail="Invalid or inactive API key.",
         )
 
     return api_key
