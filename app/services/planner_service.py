@@ -36,13 +36,15 @@ def generate_database_schema(
     requirement: str,
     blueprint: dict = None,
     additional_context: str = None,
+    session_id: str = None,
 ) -> dict:
     """
-    Multi-pass schema generation.
+    Multi-pass database schema generation.
     Generates tables in small batches (MAX_TABLES_PER_BATCH per AI call),
     stitches all batches together, validates, and auto-fixes.
     Target: 80-120 tables with full depth.
     """
+    from app.db.session_store import load_session
     start_time = time.time()
 
     # ── Step 1: Match rules ──────────────────────────────────────
@@ -60,6 +62,37 @@ def generate_database_schema(
         gst_required = blueprint.get("gst_required", False)
         scale = blueprint.get("scale", "medium")
         project_name = blueprint.get("project_name", "Project")
+
+        # Load L1-L7 metadata from session if available
+        if session_id:
+            state = load_session(session_id)
+            if state:
+                l1_data = state.l1_data
+                l2_data = state.l2_data
+                l3_data = state.l3_data
+                l4_data = state.l4_data
+                l5_data = state.l5_data
+                l6_data = state.l6_data
+                l7_data = state.l7_data
+
+                if l1_data:
+                    from app.engine.council import run_architecture_council
+                    from app.engine.simulation_engine import simulate_architecture
+                    from app.engine.genome import calculate_genome, benchmark_project
+                    from app.engine.recommendation_engine import generate_recommendations
+
+                    council_synthesis, _ = run_architecture_council(
+                        l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, l7_data, blueprint
+                    )
+                    simulation_report = simulate_architecture(blueprint, l5_data, scale)
+                    genome = calculate_genome(
+                        l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, blueprint
+                    )
+                    benchmarks = benchmark_project(genome, [])
+                    try:
+                        recommendations = asyncio.run(generate_recommendations(blueprint, None))
+                    except Exception:
+                        recommendations = []
     else:
         from app.engine.abstraction_pipeline import (
             generate_l1_understanding,
@@ -255,10 +288,8 @@ def generate_database_schema(
     }
 
     if failed_modules:
-        logger.warning(
-            f"⚠️  {len(failed_modules)} module(s) had failures: "
-            f"{[f['module'] for f in failed_modules]}"
-        )
+        failed_names = ", ".join(f['module'] for f in failed_modules)
+        raise RuntimeError(f"Generation failed for modules: {failed_names}")
 
     # ── Step 7: Generate Traceability Graph ──────────────────
     traceability_graph = {}
@@ -457,6 +488,32 @@ def generate_database_schema_for_job(
             gst_required = blueprint.get("gst_required", False)
             scale        = blueprint.get("scale", "medium")
             project_name = blueprint.get("project_name", "Project")
+
+            # Load L1-L7 metadata from session if available
+            if session_id:
+                state = load_session(session_id)
+                if state:
+                    l1_data = state.l1_data
+                    l2_data = state.l2_data
+                    l3_data = state.l3_data
+                    l4_data = state.l4_data
+                    l5_data = state.l5_data
+                    l6_data = state.l6_data
+                    l7_data = state.l7_data
+
+                    if l1_data:
+                        from app.engine.council import run_architecture_council
+                        from app.engine.simulation_engine import simulate_architecture
+                        from app.engine.genome import calculate_genome, benchmark_project
+
+                        council_synthesis, _ = run_architecture_council(
+                            l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, l7_data, blueprint
+                        )
+                        simulation_report = simulate_architecture(blueprint, l5_data, scale)
+                        genome = calculate_genome(
+                            l1_data, l2_data, l3_data, l4_data, l5_data, l6_data, blueprint
+                        )
+                        benchmarks = benchmark_project(genome, [])
         else:
             from app.engine.abstraction_pipeline import (
                 generate_l1_understanding,

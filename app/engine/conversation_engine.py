@@ -58,6 +58,15 @@ class ConversationState:
     sql_file_path: Optional[str] = None
     pdf_file_path: Optional[str] = None
 
+    # L1-L7 Abstraction Pipeline Metadata
+    l1_data: Optional[dict] = None
+    l2_data: Optional[dict] = None
+    l3_data: Optional[dict] = None
+    l4_data: Optional[dict] = None
+    l5_data: Optional[dict] = None
+    l6_data: Optional[dict] = None
+    l7_data: Optional[dict] = None
+
     def add_message(self, role: str, content: str):
         self.messages.append(
             ConversationMessage(role=role, content=content, stage=self.stage)

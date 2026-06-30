@@ -54,7 +54,13 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    if not s.DEBUG and s.JWT_SECRET == "supersecretjwtkeyforlocaldevenvironmentchangeinproduction":
+        raise ValueError(
+            "SECURITY FAILURE: The default JWT_SECRET cannot be used in production. "
+            "Please configure a secure JWT_SECRET in your .env file."
+        )
+    return s
 
 
 settings = get_settings()

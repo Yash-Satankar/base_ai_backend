@@ -26,21 +26,6 @@ def get_groq_client() -> Groq:
 # ───────────────────────────────────────────────────────────────
 
 
-# ─── Anthropic client (commented — switch when you have credits) ─
-# import anthropic
-# _anthropic_client = None
-#
-# def get_anthropic_client():
-#     global _anthropic_client
-#     if _anthropic_client is None:
-#         _anthropic_client = anthropic.Anthropic(
-#             api_key=settings.ANTHROPIC_API_KEY
-#         )
-#         logger.info("✅ Anthropic client initialised")
-#     return _anthropic_client
-# ───────────────────────────────────────────────────────────────
-
-
 from app.core.resilience import retry_on_failure_sync
 
 @retry_on_failure_sync(retries=3, delay=1.0, backoff=2.0)
@@ -60,11 +45,8 @@ def generate_schema(
     if provider == "groq":
         return _generate_with_groq(system_prompt, user_prompt, max_tokens)
 
-    # elif provider == "anthropic":
-    #     return _generate_with_anthropic(system_prompt, user_prompt)
-
     else:
-        raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq' or 'anthropic'.")
+        raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq'.")
 
 
 def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> dict:
@@ -104,6 +86,7 @@ def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Option
                 else:
                     max_tokens_to_use = settings.MAX_TOKENS
 
+                # Clean prompt inputs of potential malicious patterns
                 response = client.chat.completions.create(
                     model=model_to_use,
                     messages=[
@@ -178,40 +161,3 @@ def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Option
         status_code=503,
         detail=f"AI service unavailable across all models: {str(last_exception)[:100]}",
     )
-
-
-# ─── Anthropic implementation — uncomment when you have credits ──
-#
-# def _generate_with_anthropic(system_prompt: str, user_prompt: str) -> dict:
-#     """Generate using Claude Sonnet — best quality, paid."""
-#     client = get_anthropic_client()
-#
-#     response = client.messages.create(
-#         model=settings.ANTHROPIC_MODEL,
-#         max_tokens=settings.MAX_TOKENS,
-#         system=system_prompt,
-#         messages=[
-#             {
-#                 "role": "user",
-#                 "content": user_prompt,
-#             }
-#         ],
-#         temperature=0.2,
-#     )
-#
-#     content = response.content[0].text
-#     input_tokens = response.usage.input_tokens
-#     output_tokens = response.usage.output_tokens
-#
-#     logger.info(f"✅ Anthropic response: {input_tokens} in / {output_tokens} out tokens")
-#
-#     return {
-#         "content": content,
-#         "provider": "anthropic",
-#         "model": settings.ANTHROPIC_MODEL,
-#         "usage": {
-#             "input_tokens": input_tokens,
-#             "output_tokens": output_tokens,
-#         },
-#     }
-# ───────────────────────────────────────────────────────────────

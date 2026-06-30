@@ -24,6 +24,9 @@ def get_redis_client():
             _redis_client.ping()
             logger.info("✅ Redis connected")
         except Exception as e:
+            if not settings.DEBUG:
+                logger.critical(f"❌ Redis connection failed in production: {e}")
+                raise RuntimeError(f"Redis connection failed in production: {e}")
             logger.warning(
                 f"⚠️ Redis unavailable — falling back to memory store: {e}"
             )
@@ -50,7 +53,12 @@ def save_session(state) -> bool:
             )
             return True
         except Exception as e:
-            logger.error(f"Redis save failed: {e} — falling back to memory")
+            logger.error(f"Redis save failed: {e}")
+            if not settings.DEBUG:
+                raise RuntimeError(f"Redis save failed in production: {e}")
+
+    if not settings.DEBUG:
+        raise RuntimeError("Redis client is not available in production.")
 
     # Memory fallback
     _memory_store[state.session_id] = state
@@ -69,7 +77,12 @@ def load_session(session_id: str) -> Optional[object]:
                 return pickle.loads(data)
             return None
         except Exception as e:
-            logger.error(f"Redis load failed: {e} — falling back to memory")
+            logger.error(f"Redis load failed: {e}")
+            if not settings.DEBUG:
+                raise RuntimeError(f"Redis load failed in production: {e}")
+
+    if not settings.DEBUG:
+        raise RuntimeError("Redis client is not available in production.")
 
     # Memory fallback
     return _memory_store.get(session_id)
@@ -86,6 +99,11 @@ def delete_session(session_id: str) -> bool:
             return True
         except Exception as e:
             logger.error(f"Redis delete failed: {e}")
+            if not settings.DEBUG:
+                raise RuntimeError(f"Redis delete failed in production: {e}")
+
+    if not settings.DEBUG:
+        raise RuntimeError("Redis client is not available in production.")
 
     # Memory fallback
     _memory_store.pop(session_id, None)
@@ -107,4 +125,6 @@ def extend_session_ttl(session_id: str) -> bool:
             return True
         except Exception as e:
             logger.error(f"Redis TTL extend failed: {e}")
+            if not settings.DEBUG:
+                raise RuntimeError(f"Redis TTL extend failed in production: {e}")
     return False

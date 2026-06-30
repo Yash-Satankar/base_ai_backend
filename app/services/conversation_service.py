@@ -444,14 +444,78 @@ Here are my next questions (Round {round_num}):
     }
 
 
+def _compile_pipeline_blueprint(
+    state: ConversationState,
+    requirement: str,
+    domain: str,
+    gst_required: bool,
+    scale: str
+) -> ProjectBlueprint:
+    """Helper to run the L1-L8 compilation pipeline and save L1-L7 metadata in state."""
+    from app.engine.abstraction_pipeline import (
+        generate_l1_understanding,
+        compile_l1_to_l2,
+        compile_l2_to_l3,
+        compile_l3_to_l4,
+        compile_l4_to_l5_l6_l7,
+        compile_to_l8_blueprint,
+    )
+    from app.services.rule_service import DOMAIN_MANDATORY_RULES
+
+    # Run the 5-stage AI compilation
+    l1 = generate_l1_understanding(requirement)
+    l2 = compile_l1_to_l2(l1)
+    l3 = compile_l2_to_l3(l1, l2)
+    l4 = compile_l3_to_l4(l1, l3)
+    l5, l6, l7 = compile_l4_to_l5_l6_l7(l1, l4)
+    bp_spec = compile_to_l8_blueprint(l1, l4, l5, l6, l7)
+
+    # Save L1-L7 data to state for downstream engines (Simulation, Council, etc.)
+    state.l1_data = l1.model_dump()
+    state.l2_data = l2.model_dump()
+    state.l3_data = l3.model_dump()
+    state.l4_data = l4.model_dump()
+    state.l5_data = l5.model_dump()
+    state.l6_data = l6.model_dump()
+    state.l7_data = l7.model_dump()
+
+    # Convert BlueprintSpec to ProjectBlueprint
+    modules_list = []
+    for m in bp_spec.modules:
+        tables_list = []
+        for t in m.tables:
+            tables_list.append({
+                "name": t.name,
+                "purpose": t.purpose,
+                "table_type": t.table_type,
+                "entity_name": t.entity_name,
+                "requires_archive": t.requires_archive,
+                "requires_lifecycle": t.requires_lifecycle,
+            })
+        modules_list.append({
+            "name": m.name,
+            "description": m.description,
+            "tables": tables_list,
+            "dependencies": m.dependencies,
+        })
+
+    return ProjectBlueprint(
+        project_name=bp_spec.project_name,
+        description=bp_spec.description,
+        domain=bp_spec.domain or domain,
+        all_domains=[bp_spec.domain or domain],
+        modules=modules_list,
+        rules_to_apply=DOMAIN_MANDATORY_RULES.get(bp_spec.domain or domain, []),
+        scale=bp_spec.scale or scale,
+        gst_required=bp_spec.gst_required or gst_required,
+    )
+
+
 def _generate_blueprint_from_understanding(state: ConversationState, primary_domain: str) -> dict:
     """
     Generate the blueprint using all accumulated context.
     Called when either user triggers generation or AI confidence >= 85%.
     """
-    from app.engine.architecture_planner import generate_deep_blueprint
-    from app.services.rule_service import DOMAIN_MANDATORY_RULES
-
     full_requirement = state.requirement_summary
 
     gst_required = any(w in full_requirement.lower()
@@ -464,45 +528,26 @@ def _generate_blueprint_from_understanding(state: ConversationState, primary_dom
     elif any(w in req_lower for w in ["small", "startup", "simple", "basic"]):
         scale = "small"
 
-    # Include understood aspects in requirement context
-    if state.understood_aspects:
-        understood_str = json.dumps(state.understood_aspects, indent=2)
-        enriched_requirement = f"""{full_requirement}
-
-=== STRUCTURED UNDERSTANDING FROM DISCOVERY ===
-{understood_str}
-"""
-    else:
-        enriched_requirement = full_requirement
-
-    bp_data = generate_deep_blueprint(
-        requirement=enriched_requirement,
+    blueprint = _compile_pipeline_blueprint(
+        state=state,
+        requirement=full_requirement,
         domain=primary_domain,
         gst_required=gst_required,
         scale=scale,
     )
 
-    state.blueprint = ProjectBlueprint(
-        project_name=bp_data.get("project_name", "My Project"),
-        description=bp_data.get("description", full_requirement[:100]),
-        domain=primary_domain,
-        all_domains=[primary_domain],
-        modules=bp_data.get("modules", []),
-        rules_to_apply=DOMAIN_MANDATORY_RULES.get(primary_domain, []),
-        scale=scale,
-        gst_required=gst_required,
-    )
+    state.blueprint = blueprint
     state.stage = ConversationStage.BLUEPRINT
 
     blueprint_text = _format_blueprint(state.blueprint)
     total_tables = sum(len(m.get("tables", [])) for m in state.blueprint.modules)
 
     message = f"""I believe I understand your project well now! Here's the **Database Blueprint** I've designed:
-
+ 
 {blueprint_text}
-
+ 
 **~{total_tables} tables** across **{len(state.blueprint.modules)} modules** — tailored specifically to your project.
-
+ 
 ---
 **Does this match your vision?**
 - Type **YES** to confirm and generate the full SQL schema
@@ -531,13 +576,13 @@ def _handle_blueprint_confirmation(state: ConversationState, user_message: str) 
         tables_count = sum(len(m["tables"]) for m in state.blueprint.modules)
 
         confirm_message = f"""✅ **Blueprint confirmed!**
-
+ 
 I will now generate:
 - **{tables_count} tables** across **{len(module_names)} modules**
 - Modules: {', '.join(module_names)}
 - GST compliance: {'✓ Yes' if state.blueprint.gst_required else '✗ Not required'}
 - Scale: {state.blueprint.scale.title()}
-
+ 
 **Starting schema generation now...**"""
 
         state.add_message("assistant", confirm_message)
@@ -551,9 +596,9 @@ I will now generate:
         blueprint_text = _format_blueprint(state.blueprint)
 
         message = f"""I've updated the blueprint based on your feedback:
-
+ 
 {blueprint_text}
-
+ 
 ---
 Type **YES** to confirm, or let me know if you need more changes."""
 
@@ -594,69 +639,27 @@ def _handle_generation(state: ConversationState) -> dict:
     }
 
 
-# ── Blueprint generation using AI ───────────────────────────────
-
 def _generate_blueprint(state: ConversationState, requirement: str) -> dict:
-    """Use AI to regenerate a structured blueprint from requirement (for edits)."""
-    from app.engine.rule_matcher import detect_domain, detect_all_domains
-    from app.services.rule_service import DOMAIN_MANDATORY_RULES
-
+    """Use L1-L8 compilation pipeline to regenerate a structured blueprint from requirement."""
+    from app.engine.rule_matcher import detect_domain
     primary_domain, _ = detect_domain(requirement)
-    all_domains = detect_all_domains(requirement)
-    mandatory_rules = DOMAIN_MANDATORY_RULES.get(primary_domain, [])
 
-    system_prompt = """You are a database architect.
-Analyse the requirement and return a JSON blueprint ONLY.
-No explanation, no markdown, just valid JSON.
+    gst_required = any(w in requirement.lower()
+                       for w in ["gst", "invoice", "tax", "billing"])
 
-IMPORTANT: The schema structure should be determined entirely by the project's needs.
-- Do NOT force archive or lifecycle tables on every entity
-- Factory, configuration, lookup, and reference tables do NOT need backup tables
-- Design the schema to match what the project ACTUALLY needs
-- Table names should end with: _header_all, _transaction_all, _configuration_all, _archive_all, _life_cycle_all, or _all
+    scale = "medium"
+    req_lower = requirement.lower()
+    if any(w in req_lower for w in ["large", "million", "millions", "enterprise", "thousands", "billion"]):
+        scale = "large"
+    elif any(w in req_lower for w in ["small", "startup", "simple", "basic"]):
+        scale = "small"
 
-Return exactly this structure:
-{
-  "project_name": "short project name",
-  "description": "one sentence description",
-  "domain": "primary domain",
-  "gst_required": true or false,
-  "scale": "small" or "medium" or "large",
-  "modules": [
-    {
-      "name": "Module Name",
-      "description": "what this module does",
-      "tables": [
-        {"name": "table_name_header_all", "purpose": "what this table stores"}
-      ]
-    }
-  ]
-}"""
-
-    user_prompt = f"Requirement: {requirement}"
-
-    response = generate_schema(system_prompt=system_prompt, user_prompt=user_prompt)
-    content = response["content"].strip()
-    if content.startswith("```"):
-        content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
-    content = content.strip()
-
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        data = _fallback_blueprint(requirement, primary_domain)
-
-    blueprint = ProjectBlueprint(
-        project_name=data.get("project_name", "My Project"),
-        description=data.get("description", requirement[:100]),
+    blueprint = _compile_pipeline_blueprint(
+        state=state,
+        requirement=requirement,
         domain=primary_domain,
-        all_domains=all_domains,
-        modules=data.get("modules", []),
-        rules_to_apply=mandatory_rules,
-        scale=data.get("scale", "medium"),
-        gst_required=data.get("gst_required", False),
+        gst_required=gst_required,
+        scale=scale,
     )
     return {"blueprint": blueprint}
 

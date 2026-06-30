@@ -32,6 +32,21 @@ class StartSessionResponse(BaseModel):
     stage: str
 
 
+class SessionStatusResponse(BaseModel):
+    session_id: str
+    stage: str
+    messages_count: int
+    has_blueprint: bool
+    has_schema: bool
+    validation_score: Optional[int] = None
+    fix_attempts: int
+
+
+class DeleteSessionResponse(BaseModel):
+    message: str
+    session_id: str
+
+
 class MessageRequest(BaseModel):
     session_id: str
     message: str
@@ -54,7 +69,7 @@ class MessageResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-@router.post("/start")
+@router.post("/start", response_model=StartSessionResponse)
 @limiter.limit("10/hour")          # max 10 new sessions per hour per IP
 async def start_conversation(
     request: Request,
@@ -62,6 +77,10 @@ async def start_conversation(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Start a new conversational design session.
+    Optionally associates the session with a persistent project.
+    """
     state = await create_session(db, current_user, project_id)
     return StartSessionResponse(
         session_id=state.session_id,
@@ -78,6 +97,10 @@ async def send_message(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Send a message to the active session and get the next response.
+    Triggers intent detection, clarification, or blueprint generation.
+    """
     # Sanitise input
     clean_message = sanitise_input(body.message)
 
@@ -104,25 +127,33 @@ async def send_message(
         )
 
 
-@router.get("/session/{session_id}")
-async def get_session_status(session_id: str):
-    """Get current status of a session."""
+@router.get("/session/{session_id}", response_model=SessionStatusResponse)
+@limiter.limit("60/minute")
+async def get_session_status(
+    request: Request,
+    session_id: str
+):
+    """Get current status, stage, and metadata of a session."""
     state = get_session(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    return {
-        "session_id": session_id,
-        "stage": state.stage,
-        "messages_count": len(state.messages),
-        "has_blueprint": state.blueprint is not None,
-        "has_schema": state.schema is not None,
-        "validation_score": state.validation_score,
-        "fix_attempts": state.fix_attempts,
-    }
+    return SessionStatusResponse(
+        session_id=session_id,
+        stage=state.stage,
+        messages_count=len(state.messages),
+        has_blueprint=state.blueprint is not None,
+        has_schema=state.schema is not None,
+        validation_score=state.validation_score,
+        fix_attempts=state.fix_attempts,
+    )
 
 @router.get("/download/sql/{session_id}")
-async def download_sql(session_id: str):
+@limiter.limit("10/minute")
+async def download_sql(
+    request: Request,
+    session_id: str
+):
     """Download the generated .sql file."""
     state = get_session(session_id)
     if not state:
@@ -138,7 +169,11 @@ async def download_sql(session_id: str):
 
 
 @router.get("/download/pdf/{session_id}")
-async def download_pdf(session_id: str):
+@limiter.limit("10/minute")
+async def download_pdf(
+    request: Request,
+    session_id: str
+):
     """Download the generated .pdf documentation."""
     state = get_session(session_id)
     if not state:
@@ -153,8 +188,12 @@ async def download_pdf(session_id: str):
     )
 
 
-@router.delete("/session/{session_id}")
-async def end_session(session_id: str):
+@router.delete("/session/{session_id}", response_model=DeleteSessionResponse)
+@limiter.limit("10/minute")
+async def end_session(
+    request: Request,
+    session_id: str
+):
     """Delete a session when done."""
     delete_session(session_id)
-    return {"message": "Session ended", "session_id": session_id}
+    return DeleteSessionResponse(message="Session ended", session_id=session_id)

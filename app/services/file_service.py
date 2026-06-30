@@ -5,6 +5,7 @@ import re
 import json
 from datetime import datetime
 from pathlib import Path
+from app.services.planner_helpers import clean_sql as robust_clean_sql
 
 # PDF generation
 from reportlab.lib.pagesizes import A4
@@ -37,7 +38,7 @@ def generate_sql_file(
     Returns the file path.
     """
     # Strip markdown code blocks if present
-    clean_sql = _clean_sql(schema_sql)
+    clean_sql = robust_clean_sql(schema_sql)
 
     # Build file header
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -50,6 +51,7 @@ def generate_sql_file(
 -- Rules    : 109 production rules applied
 -- ============================================================
 
+SET FOREIGN_KEY_CHECKS = 0;
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 SET time_zone = "+00:00";
 START TRANSACTION;
@@ -58,6 +60,7 @@ START TRANSACTION;
     footer = """
 
 COMMIT;
+SET FOREIGN_KEY_CHECKS = 1;
 -- ============================================================
 -- End of schema
 -- ============================================================
@@ -702,7 +705,7 @@ def _get_table_logic(table_name: str, blueprint: dict) -> tuple[str, str, str]:
 
 def _parse_tables_from_sql(sql: str) -> list[dict]:
     """Parse CREATE TABLE statements into structured dicts."""
-    clean = _clean_sql(sql)
+    clean = robust_clean_sql(sql)
     tables = []
 
     pattern = re.finditer(
@@ -761,16 +764,6 @@ def _parse_columns(body: str) -> list[dict]:
         })
 
     return columns
-
-
-def _clean_sql(sql: str) -> str:
-    """Remove markdown code block fences."""
-    sql = sql.strip()
-    if sql.startswith("```"):
-        lines = sql.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        sql = "\n".join(lines)
-    return sql.strip()
 
 
 def _safe_filename(name: str) -> str:

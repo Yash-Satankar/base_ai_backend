@@ -34,6 +34,7 @@ def stitch_modules(all_sql_parts: list[dict], project_name: str) -> str:
 -- Tables   : {total_tables}
 -- ============================================================
 
+SET FOREIGN_KEY_CHECKS = 0;
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 SET time_zone = "+00:00";
 START TRANSACTION;
@@ -50,7 +51,7 @@ START TRANSACTION;
 """
         sections.append(section)
 
-    footer = "\nCOMMIT;\n"
+    footer = "\nCOMMIT;\nSET FOREIGN_KEY_CHECKS = 1;\n"
     return header + "\n".join(sections) + footer
 
 

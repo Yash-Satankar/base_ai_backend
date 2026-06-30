@@ -5,7 +5,7 @@ Exposes REST endpoints for managing persistent projects and fetching historical 
 """
 
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -16,22 +16,29 @@ from app.schemas.project_schemas import (
 )
 from app.core.auth import get_current_user
 from app.db.models import User
+from app.core.security import limiter, sanitise_input
 
 router = APIRouter()
 
 
 @router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def create_project(
+    request: Request,
     body: ProjectCreateRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new persistent project container."""
     project_repo = ProjectRepository(db)
+    
+    clean_name = sanitise_input(body.name)
+    clean_desc = sanitise_input(body.description) if body.description else None
+    
     project = await project_repo.create(
         owner_id=current_user.id,
-        name=body.name,
-        description=body.description,
+        name=clean_name,
+        description=clean_desc,
         domain=body.domain
     )
     await db.commit()
@@ -51,7 +58,9 @@ async def create_project(
 
 
 @router.get("/", response_model=List[ProjectResponse])
+@limiter.limit("30/minute")
 async def list_projects(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -76,7 +85,9 @@ async def list_projects(
 
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)
+@limiter.limit("30/minute")
 async def get_project_details(
+    request: Request,
     project_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -127,7 +138,9 @@ async def get_project_details(
 
 
 @router.delete("/{project_id}", response_model=dict)
+@limiter.limit("10/minute")
 async def delete_project(
+    request: Request,
     project_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -153,7 +166,9 @@ async def delete_project(
 
 
 @router.get("/{project_id}/versions/{version_number}", response_model=VersionDetailResponse)
+@limiter.limit("30/minute")
 async def get_version_details(
+    request: Request,
     project_id: str,
     version_number: int,
     current_user: User = Depends(get_current_user),

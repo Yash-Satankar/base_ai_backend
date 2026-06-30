@@ -72,7 +72,11 @@ async def generate_schema_endpoint(
 # ── GET /planner/job/{job_id}  (polling endpoint) ─────────────────
 
 @router.get("/job/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
+@limiter.limit("60/minute")
+async def get_job_status(
+    request: Request,
+    job_id: str
+):
     """
     Poll this endpoint to check progress or retrieve the finished schema.
 
@@ -135,13 +139,18 @@ async def generate_schema_sync_endpoint(
 # ── POST /planner/match-rules ─────────────────────────────────────
 
 @router.post("/match-rules", response_model=MatchRulesResponse)
-async def match_rules_endpoint(body: MatchRulesRequest):
+@limiter.limit("20/minute")
+async def match_rules_endpoint(
+    request: Request,
+    body: MatchRulesRequest
+):
     """
     Dry run — shows which rules would be applied WITHOUT generating schema.
     Use this to debug or show users which rules are active.
     """
+    clean_req = sanitise_input(body.requirement)
     try:
-        result = get_matched_rules_only(body.requirement)
+        result = get_matched_rules_only(clean_req)
         return MatchRulesResponse(success=True, **result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -193,8 +202,9 @@ async def generate_blueprint_endpoint(
 
 # ── GET /planner/jobs/stats ───────────────────────────────────────
 
-@router.get("/jobs/stats")
-async def job_stats():
+@router.get("/jobs/stats", response_model=dict)
+@limiter.limit("10/minute")
+async def get_jobs_stats(request: Request):
     """Returns a count of jobs by status — useful for monitoring."""
     store = get_job_store()
     return {"success": True, "stats": store.count()}
