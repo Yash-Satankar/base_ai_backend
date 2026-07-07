@@ -44,9 +44,10 @@ def generate_schema(
 
     if provider == "groq":
         return _generate_with_groq(system_prompt, user_prompt, max_tokens)
-
+    elif provider == "anthropic":
+        return _generate_with_anthropic(system_prompt, user_prompt, max_tokens)
     else:
-        raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq'.")
+        raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq' or 'anthropic'.")
 
 
 def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> dict:
@@ -140,6 +141,11 @@ def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Option
                             sleep_time = float(wait_match.group(1)) + 0.5
                         else:
                             sleep_time = backoff * (2 ** attempt)
+                        
+                        if sleep_time > 3.0:
+                            logger.warning(f"⚠️ Groq rate limit sleep is too long ({sleep_time:.2f}s) on {model_to_use}. Skipping model to avoid blocking.")
+                            break
+                            
                         logger.warning(f"⚠️ Groq rate limit hit (429) on {model_to_use}. Retrying in {sleep_time:.2f}s... Error: {e}")
                         time.sleep(sleep_time)
                         continue
@@ -161,3 +167,66 @@ def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Option
         status_code=503,
         detail=f"AI service unavailable across all models: {str(last_exception)[:100]}",
     )
+
+
+# ─── Anthropic client (lazy load) ──────────────────────────────
+_anthropic_client = None
+
+def get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        if not settings.ANTHROPIC_API_KEY:
+            raise HTTPException(
+                status_code=500,
+                detail="ANTHROPIC_API_KEY must be set in .env to use the Anthropic provider."
+            )
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY,
+        )
+        logger.info("✅ Anthropic client initialised")
+    return _anthropic_client
+
+
+def _generate_with_anthropic(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> dict:
+    """Generate using Anthropic Claude SDK."""
+    client = get_anthropic_client()
+    model_to_use = settings.ANTHROPIC_MODEL or "claude-3-5-sonnet-20241022"
+    
+    # Cap / handle default tokens
+    max_tokens_to_use = max_tokens or settings.MAX_TOKENS
+    if max_tokens_to_use > 8192:
+        max_tokens_to_use = 8192 # Claude 3.5 Sonnet output token limit
+
+    try:
+        response = client.messages.create(
+            model=model_to_use,
+            max_tokens=max_tokens_to_use,
+            temperature=0.2,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ],
+            timeout=settings.AI_TIMEOUT_SECONDS,
+        )
+        content = response.content[0].text
+        in_tokens = response.usage.input_tokens
+        out_tokens = response.usage.output_tokens
+
+        logger.info(f"✅ Anthropic: {in_tokens} in / {out_tokens} out tokens (Model: {model_to_use})")
+
+        return {
+            "content":  content,
+            "provider": "anthropic",
+            "model":    model_to_use,
+            "usage": {
+                "input_tokens":  in_tokens,
+                "output_tokens": out_tokens,
+            },
+        }
+    except Exception as e:
+        logger.error(f"❌ Anthropic API call failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Anthropic API call failed: {str(e)[:150]}"
+        )

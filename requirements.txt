@@ -8,7 +8,7 @@ asyncpg
 psycopg2-binary
 alembic
 python-dotenv
-# anthropic
+anthropic
 groq
 qdrant-client
 sentence-transformers

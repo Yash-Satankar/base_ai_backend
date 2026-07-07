@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "groq"
     GROQ_API_KEY: str                          # no default — must be set in .env
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    # ANTHROPIC_API_KEY: str = ""
-    # ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
 
     # Generation
     MAX_TOKENS: int = 12000

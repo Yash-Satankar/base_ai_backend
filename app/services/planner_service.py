@@ -688,13 +688,13 @@ def generate_database_schema_for_job(
             )
 
         # ── Step 4: Stitch & validate ────────────────────────────
-        combined_sql = _stitch_modules(all_sql_parts, project_name)
+        combined_sql = stitch_modules(all_sql_parts, project_name)
         validator    = SchemaValidator()
         validation   = validator.validate(combined_sql)
         total_tables = len(validation.tables_found)
 
         if validation.score < 80 and validation.issues:
-            combined_sql, validation = _run_fix_pass(
+            combined_sql, validation = run_fix_pass(
                 combined_sql, validation, system_prompt
             )
 
