@@ -1,0 +1,75 @@
+# ── Environment ───────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+pip-wheel-metadata/
+share/python-wheels/
+
+# ── Virtual Environments ──────────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# ── Testing ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# ── IDE / Editor ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Debug / Temp Files ────────────────────────────────────────────
+debug_response.txt
+debug_*.txt
+debug_*.json
+temp_*.txt
+test_output.*
+
+# ── Generated Output ──────────────────────────────────────────────
+generated_schemas/
+output/
+*.sql.bak
+
+# ── Docker ────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Database ──────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Alembic ───────────────────────────────────────────────────────
+alembic/versions/*.pyc
+
+# ── Sentence Transformers Cache ───────────────────────────────────
+# These are downloaded automatically — no need to commit
+.cache/
+sentence_transformers_cache/
