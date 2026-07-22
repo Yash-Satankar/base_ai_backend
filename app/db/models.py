@@ -78,7 +78,6 @@ class User(Base):
     api_keys:   Mapped[list["ApiKey"]]   = relationship("ApiKey",   back_populates="user", lazy="noload")
     projects:   Mapped[list["Project"]]  = relationship("Project",  back_populates="owner", lazy="noload",
                                                          foreign_keys="Project.owner_id")
-    memberships: Mapped[list["ProjectMember"]] = relationship("ProjectMember", back_populates="user", lazy="noload", foreign_keys="ProjectMember.user_id")
 
     __table_args__ = (
         Index("idx_users_email", "email"),
@@ -142,36 +141,12 @@ class Project(Base):
     owner:    Mapped["User"]                 = relationship("User", back_populates="projects", foreign_keys=[owner_id])
     versions: Mapped[list["ProjectVersion"]] = relationship("ProjectVersion", back_populates="project",
                                                              order_by="desc(ProjectVersion.version_number)", lazy="noload")
-    members:  Mapped[list["ProjectMember"]]  = relationship("ProjectMember", back_populates="project", lazy="noload")
     conversations: Mapped[list["Conversation"]] = relationship("Conversation", back_populates="project", lazy="noload")
 
     __table_args__ = (
         Index("idx_projects_owner_id", "owner_id"),
         Index("idx_projects_status", "status"),
         Index("idx_projects_domain", "domain"),
-    )
-
-
-# ── Project Member (for team collaboration) ───────────────────────
-
-class ProjectMember(Base):
-    """Allows multiple users to access the same project with role-based permissions."""
-    __tablename__ = "project_members"
-
-    id:         Mapped[str]        = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str]        = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    user_id:    Mapped[str]        = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    role:       Mapped[MemberRole] = mapped_column(SAEnum(MemberRole), default=MemberRole.VIEWER, nullable=False)
-    invited_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-    project: Mapped["Project"] = relationship("Project", back_populates="members")
-    user:    Mapped["User"]    = relationship("User", back_populates="memberships", foreign_keys=[user_id])
-
-    __table_args__ = (
-        UniqueConstraint("project_id", "user_id", name="uq_project_member"),
-        Index("idx_project_members_project_id", "project_id"),
-        Index("idx_project_members_user_id", "user_id"),
     )
 
 
@@ -385,105 +360,6 @@ class GraphEdge(Base):
     )
 
 
-# ── Architecture Version Control (Git) ───────────────────────────
-
-class ArchitectureCommit(Base):
-    """
-    Represents a specific snapshot (commit) of the L8 architecture blueprint.
-    Acts as the source of truth for version-controlled design history.
-    """
-    __tablename__ = "architecture_commits"
-
-    id:          Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id:  Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    parent_id:   Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("architecture_commits.id"), nullable=True)
-    author_id:   Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    message:     Mapped[str]      = mapped_column(String(255), nullable=False)
-    blueprint:   Mapped[dict]     = mapped_column(JSON, nullable=False)                    # The full L8 blueprint JSON
-    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-
-class ArchitectureBranch(Base):
-    """
-    A Git-like branch pointing to a specific commit head.
-    """
-    __tablename__ = "architecture_branches"
-
-    id:          Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id:  Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    name:        Mapped[str]      = mapped_column(String(100), nullable=False)             # "main", "feature/auth"
-    commit_id:   Mapped[str]      = mapped_column(String(36), ForeignKey("architecture_commits.id"), nullable=False)
-    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("project_id", "name", name="uq_project_branch_name"),
-    )
-
-
-class ArchitecturePullRequest(Base):
-    """
-    A proposal to merge changes from a source branch to a target branch.
-    Includes reviewer assignments and status tracking.
-    """
-    __tablename__ = "architecture_pull_requests"
-
-    id:            Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id:    Mapped[str]      = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    title:         Mapped[str]      = mapped_column(String(255), nullable=False)
-    description:   Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    source_branch: Mapped[str]      = mapped_column(String(100), nullable=False)
-    target_branch: Mapped[str]      = mapped_column(String(100), nullable=False)
-    status:        Mapped[str]      = mapped_column(String(20), default="open", nullable=False)  # "open" | "merged" | "closed"
-    author_id:     Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    reviewer_id:   Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    created_at:    Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-
-class ArchitectureComment(Base):
-    """
-    Inline code/table comments on a Pull Request.
-    """
-    __tablename__ = "architecture_comments"
-
-    id:          Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
-    pr_id:       Mapped[str]      = mapped_column(String(36), ForeignKey("architecture_pull_requests.id", ondelete="CASCADE"), nullable=False)
-    table_name:  Mapped[Optional[str]] = mapped_column(String(255), nullable=True)            # Target table commented on
-    column_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)            # Target column commented on
-    author_id:   Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    content:     Mapped[str]      = mapped_column(Text, nullable=False)
-    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-
-# ── Architecture Package Registry ────────────────────────────────
-
-class ArchitecturePackage(Base):
-    """
-    A reusable architecture package published to the marketplace.
-    Can be public or private, supports versioning and dependency lists.
-    """
-    __tablename__ = "architecture_packages"
-
-    id:           Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
-    name:         Mapped[str]      = mapped_column(String(100), nullable=False)             # "LedgerCore"
-    version:      Mapped[str]      = mapped_column(String(20), nullable=False)              # "1.2.0"
-    description:  Mapped[str]      = mapped_column(Text, nullable=False)
-    blueprint:    Mapped[dict]     = mapped_column(JSON, nullable=False)                    # The component blueprint spec
-    dependencies: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)                # {"AuditCore": "^1.0.0"}
-    is_public:    Mapped[bool]     = mapped_column(Boolean, default=True, nullable=False)
-    owner_id:     Mapped[str]      = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    downloads:    Mapped[int]      = mapped_column(Integer, default=0, nullable=False)
-    rating_avg:   Mapped[float]    = mapped_column(Float, default=5.0, nullable=False)
-    created_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("name", "version", name="uq_package_name_version"),
-        Index("idx_arch_packages_owner", "owner_id"),
-    )
-
-
-# APIKey is already defined above as ApiKey (line 90)
-
-
 # ── Competitive Benchmarking & Validation ───────────────────────
 
 class BenchmarkRun(Base):
@@ -499,19 +375,6 @@ class BenchmarkRun(Base):
     metrics:          Mapped[dict]     = mapped_column(JSON, nullable=False)                  # Normalization, audit, etc.
     blueprint:        Mapped[dict]     = mapped_column(JSON, nullable=False)
     created_at:       Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
-
-
-class RuleAnalytics(Base):
-    """
-    Tracks the real-world effectiveness and trigger rates of architectural rules.
-    """
-    __tablename__ = "rule_analytics"
-
-    id:               Mapped[str]   = mapped_column(String(36), primary_key=True, default=_uuid)
-    rule_id:          Mapped[str]   = mapped_column(String(100), unique=True, nullable=False)
-    times_triggered:  Mapped[int]   = mapped_column(Integer, default=0, nullable=False)
-    times_ignored:    Mapped[int]   = mapped_column(Integer, default=0, nullable=False)
-    avg_score_impact: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
 
 # ── Customer Intelligence & Continuous Learning ──────────────────

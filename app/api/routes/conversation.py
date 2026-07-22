@@ -81,6 +81,10 @@ async def start_conversation(
     Start a new conversational design session.
     Optionally associates the session with a persistent project.
     """
+    if project_id and current_user and db:
+        from app.core.auth_helpers import verify_project_ownership
+        await verify_project_ownership(db, project_id, current_user.id)
+
     state = await create_session(db, current_user, project_id)
     return StartSessionResponse(
         session_id=state.session_id,

@@ -65,10 +65,10 @@ async def create_session(db: Optional[AsyncSession] = None, user: Optional[User]
         project = None
         
         if project_id:
-            project = await project_repo.get_by_id(project_id)
-        
-        # If no project matches, create a new container
-        if not project:
+            from app.core.auth_helpers import get_project_active_or_404
+            project = await get_project_active_or_404(db, project_id)
+        else:
+            # If no project_id provided, create a new container
             project = await project_repo.create(
                 owner_id=user.id,
                 name="New Database Design",
@@ -119,6 +119,14 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
     state = get_session(session_id)
     if not state:
         raise ValueError(f"Session '{session_id}' not found")
+
+    if db and state.project_id:
+        from app.core.auth_helpers import get_project_active_or_404
+        try:
+            await get_project_active_or_404(db, state.project_id)
+        except Exception as e:
+            delete_session(session_id)
+            raise e
 
     # Record user message in Redis
     state.add_message("user", user_message)

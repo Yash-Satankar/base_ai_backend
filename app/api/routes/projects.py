@@ -93,15 +93,9 @@ async def get_project_details(
     db: AsyncSession = Depends(get_db)
 ):
     """Get project container details and list all historical schema versions."""
+    from app.core.auth_helpers import verify_project_ownership
+    project = await verify_project_ownership(db, project_id, current_user.id)
     project_repo = ProjectRepository(db)
-    project = await project_repo.get_by_id(project_id)
-    
-    # Simple ACL check
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found."
-        )
 
     versions = await project_repo.list_versions(project_id)
     
@@ -146,13 +140,9 @@ async def delete_project(
     db: AsyncSession = Depends(get_db)
 ):
     """Deactivate and soft delete a project and its history."""
+    from app.core.auth_helpers import verify_project_ownership
+    project = await verify_project_ownership(db, project_id, current_user.id)
     project_repo = ProjectRepository(db)
-    project = await project_repo.get_by_id(project_id)
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found."
-        )
 
     succeeded = await project_repo.delete_project(project_id)
     if not succeeded:
@@ -161,6 +151,18 @@ async def delete_project(
             detail="Could not delete project."
         )
     
+    # Soft-delete cascade cleanup: purge active Redis sessions linked to this project
+    from sqlalchemy import select
+    from app.db.models import Conversation
+    from app.db.session_store import delete_session
+    conv_result = await db.execute(
+        select(Conversation.redis_session_id).where(Conversation.project_id == project_id)
+    )
+    redis_session_ids = conv_result.scalars().all()
+    for sid in redis_session_ids:
+        if sid:
+            delete_session(sid)
+
     await db.commit()
     return {"success": True, "message": "Project soft deleted successfully."}
 
@@ -175,13 +177,9 @@ async def get_version_details(
     db: AsyncSession = Depends(get_db)
 ):
     """Fetch complete metadata, approved blueprint, generated DDL, and reports for a specific version."""
+    from app.core.auth_helpers import verify_project_ownership
+    project = await verify_project_ownership(db, project_id, current_user.id)
     project_repo = ProjectRepository(db)
-    project = await project_repo.get_by_id(project_id)
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found."
-        )
 
     version = await project_repo.get_version_by_number(project_id, version_number)
     if not version:

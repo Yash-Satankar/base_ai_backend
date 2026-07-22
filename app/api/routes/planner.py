@@ -2,7 +2,10 @@
 
 import asyncio
 import logging
-from fastapi import APIRouter, HTTPException, Request
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Request, Depends
+from app.core.auth import get_current_user_optional
+from app.db.models import User
 
 from app.core.security import limiter, sanitise_input
 from app.schemas.planner_schemas import (
@@ -35,6 +38,7 @@ router = APIRouter()
 async def generate_schema_endpoint(
     request: Request,
     body: GenerateSchemaRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Submit a schema generation job.  Returns immediately with a job_id.
@@ -44,8 +48,9 @@ async def generate_schema_endpoint(
     """
     clean_req = sanitise_input(body.requirement)
 
+    owner_id = current_user.id if current_user else None
     store  = get_job_store()
-    job_id = store.create(clean_req, body.blueprint)
+    job_id = store.create(clean_req, body.blueprint, owner_id=owner_id)
 
     # Fire-and-forget in the thread pool so the event loop is never blocked
     asyncio.create_task(
@@ -59,7 +64,7 @@ async def generate_schema_endpoint(
         )
     )
 
-    logger.info(f"📥 Job queued: {job_id[:8]}... | req: {clean_req[:60]}")
+    logger.info(f"📥 Job queued: {job_id[:8]}... | owner: {owner_id} | req: {clean_req[:60]}")
 
     return SubmitJobResponse(
         success=True,
@@ -75,7 +80,8 @@ async def generate_schema_endpoint(
 @limiter.limit("60/minute")
 async def get_job_status(
     request: Request,
-    job_id: str
+    job_id: str,
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Poll this endpoint to check progress or retrieve the finished schema.
@@ -89,7 +95,7 @@ async def get_job_status(
     store = get_job_store()
     job   = store.get(job_id)
 
-    if not job:
+    if not job or not store.verify_ownership(job_id, current_user.id if current_user else None):
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
 
     return JobStatusResponse(
