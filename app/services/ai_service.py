@@ -34,6 +34,7 @@ def generate_schema(
     user_prompt: str,
     max_tokens: Optional[int] = None,
     model: Optional[str] = None,
+    temperature: Optional[float] = None,
 ) -> dict:
     """
     Central function to generate schema using the configured AI provider.
@@ -41,23 +42,25 @@ def generate_schema(
 
     ``model`` optionally forces a specific model to the front of the
     fallback chain (used by the conversational cost-degrade path).
+    ``temperature`` overrides the default 0.2 (used by the output-repair pass).
     """
 
     provider = settings.AI_PROVIDER.lower()
     logger.info(f"🤖 Generating schema using provider: {provider}")
 
     if provider == "groq":
-        return _generate_with_groq(system_prompt, user_prompt, max_tokens, model)
+        return _generate_with_groq(system_prompt, user_prompt, max_tokens, model, temperature)
     elif provider == "anthropic":
-        return _generate_with_anthropic(system_prompt, user_prompt, max_tokens)
+        return _generate_with_anthropic(system_prompt, user_prompt, max_tokens, temperature)
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq' or 'anthropic'.")
 
 
 def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None,
-                        model: Optional[str] = None) -> dict:
+                        model: Optional[str] = None, temperature: Optional[float] = None) -> dict:
     """Generate using Groq — with multi-model fallback and 429/413 retry logic."""
     client = get_groq_client()
+    temp = 0.2 if temperature is None else temperature
 
     # Fallback model chain to ensure extremely high availability on free tier quotas
     models_to_try = [
@@ -101,7 +104,7 @@ def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Option
                         {"role": "user",   "content": user_prompt},
                     ],
                     max_tokens=max_tokens_to_use,
-                    temperature=0.2,
+                    temperature=temp,
                     timeout=settings.AI_TIMEOUT_SECONDS,
                 )
                 
@@ -194,11 +197,12 @@ def get_anthropic_client():
     return _anthropic_client
 
 
-def _generate_with_anthropic(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> dict:
+def _generate_with_anthropic(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None,
+                             temperature: Optional[float] = None) -> dict:
     """Generate using Anthropic Claude SDK."""
     client = get_anthropic_client()
     model_to_use = settings.ANTHROPIC_MODEL or "claude-3-5-sonnet-20241022"
-    
+
     # Cap / handle default tokens
     max_tokens_to_use = max_tokens or settings.MAX_TOKENS
     if max_tokens_to_use > 8192:
@@ -208,7 +212,7 @@ def _generate_with_anthropic(system_prompt: str, user_prompt: str, max_tokens: O
         response = client.messages.create(
             model=model_to_use,
             max_tokens=max_tokens_to_use,
-            temperature=0.2,
+            temperature=0.2 if temperature is None else temperature,
             system=system_prompt,
             messages=[
                 {"role": "user", "content": user_prompt}

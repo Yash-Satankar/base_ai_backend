@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from app.guardrails import injection_patterns
 from app.engine.rule_matcher import DOMAIN_KEYWORDS
-from app.db.session_store import get_redis_client
+from app.db.session_store import get_redis_client, mark_redis_down
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +278,7 @@ def record_quarantine(session_id: str) -> int:
         return n
     except Exception as e:  # pragma: no cover - redis hiccup
         logger.warning(f"input_gate: could not record quarantine for {session_id}: {e}")
+        mark_redis_down(e)
         return 0
 
 
@@ -289,5 +290,6 @@ def session_flagged(session_id: str) -> bool:
     try:
         v = client.get(f"session_abuse:{session_id}")
         return v is not None and int(v) >= QUARANTINE_FLAG_THRESHOLD
-    except Exception:  # pragma: no cover
+    except Exception as e:  # pragma: no cover
+        mark_redis_down(e)
         return False

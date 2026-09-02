@@ -139,8 +139,8 @@ async def run_turn(state, user_message: str, assessment) -> dict:
             state.stage = ConversationStage.CONFIRMED
             return cs._handle_generation(state)
         return {
-            "message": "Schema generation is still running — hang tight. "
-                       "If it seems stuck, say **retry** to start a fresh attempt.",
+            "message": "I'm still generating your schema — hang tight, it'll show up here "
+                       "when it's done. If it seems stuck, say **retry** and I'll start fresh.",
             "stage": state.stage,
             "session_id": state.session_id,
         }

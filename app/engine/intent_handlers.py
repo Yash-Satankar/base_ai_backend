@@ -285,8 +285,8 @@ def handle_regenerate(state: ConversationState) -> dict:
     """
     if not state.blueprint or not state.blueprint.confirmed:
         return {
-            "message": "There's no confirmed blueprint to regenerate from. "
-                      "Please confirm a blueprint first.",
+            "message": "I don't have a confirmed blueprint to regenerate from yet — "
+                      "let's lock one in first and then I can rerun it.",
             "stage": state.stage,
             "session_id": state.session_id,
         }

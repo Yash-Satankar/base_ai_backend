@@ -24,7 +24,7 @@ import contextvars
 from app.core.config import settings
 from app.core.telemetry import TelemetryManager
 from app.services.ai_service import generate_schema
-from app.db.session_store import get_redis_client
+from app.db.session_store import get_redis_client, mark_redis_down
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ def _add_conversation_cost(session_id: str, amount: float) -> float:
             return float(total)
         except Exception as e:  # pragma: no cover
             logger.warning(f"llm_client: conv cost accounting failed for {session_id}: {e}")
+            mark_redis_down(e)
     _mem_conv_cost[session_id] = _mem_conv_cost.get(session_id, 0.0) + amount
     return _mem_conv_cost[session_id]
 
@@ -104,8 +105,8 @@ def conversation_cost(session_id: str) -> float:
         try:
             v = client.get(f"conv_cost:{session_id}")
             return float(v) if v is not None else 0.0
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as e:  # pragma: no cover
+            mark_redis_down(e)
     return _mem_conv_cost.get(session_id, 0.0)
 
 
@@ -125,7 +126,8 @@ def _warn_once(session_id: str, total: float) -> None:
     if client:
         try:
             first = bool(client.set(flag, "1", nx=True, ex=_COST_TTL))
-        except Exception:  # pragma: no cover
+        except Exception as e:  # pragma: no cover
+            mark_redis_down(e)
             first = session_id not in _mem_warned
             _mem_warned.add(session_id)
     else:
@@ -152,8 +154,8 @@ def _cache_get(key: str):
             raw = client.get(key)
             if raw:
                 return json.loads(raw)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as e:  # pragma: no cover
+            mark_redis_down(e)
     return _mem_cache.get(key)
 
 
@@ -163,8 +165,8 @@ def _cache_put(key: str, value: dict) -> None:
         try:
             client.setex(key, settings.LLM_CACHE_TTL_SECONDS, json.dumps(value))
             return
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as e:  # pragma: no cover
+            mark_redis_down(e)
     _mem_cache[key] = value
 
 
@@ -178,6 +180,7 @@ def call_llm(
     project_id: str = None,
     max_tokens: int = None,
     model: str = None,
+    temperature: float = None,
     cache: bool = False,
     degrade: bool = False,
 ) -> dict:
@@ -210,6 +213,7 @@ def call_llm(
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         model=effective_model,
+        temperature=temperature,
     )
     duration = time.time() - start
 

@@ -26,7 +26,7 @@ _CLARIFY_JSON = (
 def stub_generate(monkeypatch):
     calls = []
 
-    def fake_generate_schema(system_prompt, user_prompt, max_tokens=None, model=None):
+    def fake_generate_schema(system_prompt, user_prompt, max_tokens=None, model=None, temperature=None):
         calls.append({"system_prompt": system_prompt, "model": model})
         return {"content": _CLARIFY_JSON, "provider": "groq",
                 "model": model or "llama-3.3-70b-versatile",

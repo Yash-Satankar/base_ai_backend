@@ -108,3 +108,42 @@ def test_mark_redis_down_trips_backoff_from_an_operation_failure(monkeypatch):
     for _ in range(10):
         assert session_store.get_redis_client() is None
     assert probes["n"] == 1                    # never re-probed during the window
+
+
+class _DeadClient:
+    """Connects fine, then raises on every data operation."""
+    def ping(self):
+        return True
+
+    def __getattr__(self, name):
+        def _boom(*a, **kw):
+            raise ConnectionError(f"redis {name} failed")
+        return _boom
+
+
+@pytest.mark.real_redis
+@pytest.mark.parametrize("trigger", ["session_store", "job_store", "llm_client", "input_gate"])
+def test_operation_failure_in_any_module_trips_the_shared_backoff(trigger):
+    """A Redis *operation* failure detected by ANY of these modules opens the
+    single shared backoff window (not just session_store's own probe path)."""
+    # pretend we're already connected; the next data op will blow up
+    session_store._reset_redis_state()
+    session_store._redis_client = _DeadClient()
+
+    if trigger == "session_store":
+        from app.engine.conversation_engine import ConversationState
+        session_store.save_session(ConversationState(session_id="s1"))  # setex -> boom
+    elif trigger == "job_store":
+        from app.services import job_store
+        job_store._JobStore()._save_to_redis("j1", {"x": 1})
+    elif trigger == "llm_client":
+        from app.conversation import llm_client
+        llm_client._add_conversation_cost("sess-x", 0.001)
+    else:
+        from app.guardrails import input_gate
+        input_gate.record_quarantine("sess-x")
+
+    # window is open and the client is dropped — every caller now sees Redis down
+    assert session_store._redis_down_until > 0, f"{trigger} did not trip the backoff window"
+    assert session_store._redis_client is None
+    assert session_store.get_redis_client() is None

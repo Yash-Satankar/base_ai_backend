@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.db.session_store import get_redis_client
+from app.db.session_store import get_redis_client, mark_redis_down
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class _JobStore:
                 return True
             except Exception as e:
                 logger.error(f"Failed to save job {job_id[:8]} to Redis: {e}")
+                mark_redis_down(e)
         return False
 
     def _get_from_redis(self, job_id: str) -> Optional[dict]:
@@ -46,6 +47,7 @@ class _JobStore:
                     return json.loads(raw)
             except Exception as e:
                 logger.error(f"Failed to fetch job {job_id[:8]} from Redis: {e}")
+                mark_redis_down(e)
         return None
 
     # ── Write ────────────────────────────────────────────────────
@@ -180,6 +182,7 @@ class _JobStore:
                         statuses.append(parsed.get("status", "unknown"))
             except Exception as e:
                 logger.error(f"Error fetching job keys from Redis: {e}")
+                mark_redis_down(e)
 
         if not statuses:
             with self._lock:

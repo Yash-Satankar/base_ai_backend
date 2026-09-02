@@ -385,7 +385,7 @@ def _handle_generation(state: ConversationState) -> dict:
     return {
         "session_id": state.session_id,
         "stage": state.stage,
-        "message": "🚀 Starting schema generation...",
+        "message": "Starting on your schema now — I'll have it here shortly.",
         "requirement": generation_requirement,
         "blueprint": _blueprint_to_dict(state.blueprint) if state.blueprint else None,
     }
