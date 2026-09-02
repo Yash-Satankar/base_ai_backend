@@ -32,8 +32,8 @@ async def create_project(
     """Create a new persistent project container."""
     project_repo = ProjectRepository(db)
     
-    clean_name = sanitise_input(body.name)
-    clean_desc = sanitise_input(body.description) if body.description else None
+    clean_name = sanitise_input(body.name, strict=True)
+    clean_desc = sanitise_input(body.description, strict=True) if body.description else None
     
     project = await project_repo.create(
         owner_id=current_user.id,

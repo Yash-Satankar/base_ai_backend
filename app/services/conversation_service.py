@@ -35,6 +35,14 @@ from app.db.session_store import (
     load_session,
     delete_session as _delete_from_store,
 )
+from app.guardrails.input_gate import (
+    assess_input,
+    NON_TOPICAL,
+    QUARANTINE_FLAG_THRESHOLD,
+    record_quarantine,
+)
+from app.guardrails.output_gate import guard_text
+from app.prompts import persona
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import User
 from app.db.repositories.project_repo import ProjectRepository
@@ -128,8 +136,12 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
             delete_session(session_id)
             raise e
 
-    # Record user message in Redis
-    state.add_message("user", user_message)
+    # ── Input gate: classify before the engine sees it ─────────
+    assessment = assess_input(user_message, state)
+    mem_text = assessment.sanitized_for_memory or user_message
+
+    # Record user message in Redis (storage-safe form)
+    state.add_message("user", mem_text)
 
     # Persist user message to PostgreSQL
     db_conv = None
@@ -156,9 +168,58 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
         await project_repo.add_message(
             conversation_id=db_conv.id,
             role="user",
-            content=user_message,
+            content=mem_text,
             metadata={"stage": str(state.stage)}
         )
+
+    # ── Finalizer: output-guard, record assistant turn, persist ─
+    async def _finalize(response: dict) -> dict:
+        raw_msg = response.get("message", "")
+        safe_msg = guard_text(raw_msg, state)
+        if safe_msg != raw_msg:
+            response = {**response, "message": safe_msg}
+
+        state.add_message("assistant", response.get("message", ""))
+
+        if db and db_conv and state.version_id:
+            _repo = ProjectRepository(db)
+            # If we just created the blueprint, serialize and save to ProjectVersion
+            if state.stage == ConversationStage.BLUEPRINT and state.blueprint:
+                version = await _repo.get_version_by_id(state.version_id)
+                if version:
+                    bp_dict = state.blueprint.__dict__ if hasattr(state.blueprint, "__dict__") else state.blueprint
+                    version.blueprint = bp_dict
+                    if not version.requirement_text or version.requirement_text == "Not yet described":
+                        version.requirement_text = state.requirement_summary
+            await _repo.add_message(
+                conversation_id=db_conv.id,
+                role="assistant",
+                content=response.get("message", ""),
+                metadata={"stage": str(state.stage)},
+            )
+            await db.commit()
+
+        save_session(state)
+        return response
+
+    # ── Non-topical input: redirect in-persona, skip the engine ─
+    if assessment.category in NON_TOPICAL:
+        if assessment.quarantine:
+            count = record_quarantine(session_id)
+            if count >= QUARANTINE_FLAG_THRESHOLD:
+                logger.warning(
+                    f"🚩 Session flagged for review: {session_id} — "
+                    f"{count} quarantined inputs (latest: {assessment.category})"
+                )
+        else:
+            logger.info(
+                f"↩️ Non-topical input redirected ({assessment.category}) — session {session_id}"
+            )
+        return await _finalize({
+            "message": persona.fallback(assessment.reply_key),
+            "stage": state.stage,
+            "session_id": state.session_id,
+        })
 
     # ── Step 1: Detect intent ────────────────────────────────────
     intent = detect_intent(user_message, state)
@@ -268,33 +329,8 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
             "session_id": state.session_id,
         }
 
-    # ── Step 5: Record assistant response ────────────────────────
-    state.add_message("assistant", response.get("message", ""))
-    
-    # Save assistant message to PostgreSQL
-    if db and db_conv and state.version_id:
-        project_repo = ProjectRepository(db)
-        
-        # If we just created the blueprint, serialize and save to ProjectVersion
-        if state.stage == ConversationStage.BLUEPRINT and state.blueprint:
-            version = await project_repo.get_version_by_id(state.version_id)
-            if version:
-                bp_dict = state.blueprint.__dict__ if hasattr(state.blueprint, "__dict__") else state.blueprint
-                version.blueprint = bp_dict
-                # Also save original requirement text if not already populated
-                if not version.requirement_text or version.requirement_text == "Not yet described":
-                    version.requirement_text = state.requirement_summary
-        
-        await project_repo.add_message(
-            conversation_id=db_conv.id,
-            role="assistant",
-            content=response.get("message", ""),
-            metadata={"stage": str(state.stage)}
-        )
-        await db.commit()
-
-    save_session(state)
-    return response
+    # ── Step 5: output-guard, record assistant turn, persist ────
+    return await _finalize(response)
 
 
 

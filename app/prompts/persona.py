@@ -81,6 +81,14 @@ _FALLBACKS = {
         "Let's keep our focus on the design. What would you like the database "
         "to do?"
     ),
+    "too_long": (
+        "That's a lot to take in at once. Could you give me the core of what "
+        "you need in a few sentences? We can go deeper from there."
+    ),
+    "hostile": (
+        "I'd rather keep this constructive. Tell me what the database needs to "
+        "do and we'll get it designed."
+    ),
 }
 
 

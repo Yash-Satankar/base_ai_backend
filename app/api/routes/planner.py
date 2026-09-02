@@ -72,7 +72,7 @@ async def generate_schema_endpoint(
 
     This endpoint never blocks — generation runs in a background thread.
     """
-    clean_req = sanitise_input(body.requirement)
+    clean_req = sanitise_input(body.requirement, strict=True)
 
     owner_id = current_user.id if current_user else None
     store  = get_job_store()
@@ -161,7 +161,7 @@ async def generate_schema_sync_endpoint(
     Use POST /generate instead for production workloads.
     Kept here for local testing and small single-module requests.
     """
-    clean_req = sanitise_input(body.requirement)
+    clean_req = sanitise_input(body.requirement, strict=True)
     try:
         result = await asyncio.to_thread(
             generate_database_schema,
@@ -189,7 +189,7 @@ async def match_rules_endpoint(
     Dry run — shows which rules would be applied WITHOUT generating schema.
     Use this to debug or show users which rules are active.
     """
-    clean_req = sanitise_input(body.requirement)
+    clean_req = sanitise_input(body.requirement, strict=True)
     try:
         result = get_matched_rules_only(clean_req)
         return MatchRulesResponse(success=True, **result)
@@ -210,7 +210,7 @@ async def generate_blueprint_endpoint(
     generating the actual SQL schema.  Use the returned blueprint as
     input to POST /generate to guide generation.
     """
-    clean_req = sanitise_input(body.requirement)
+    clean_req = sanitise_input(body.requirement, strict=True)
 
     # Auto-detect domain if not provided
     domain = body.domain

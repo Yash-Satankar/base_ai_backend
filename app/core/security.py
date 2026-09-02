@@ -88,42 +88,41 @@ COMPILED_PATTERNS = [
 ]
 
 
-def sanitise_input(text: str) -> str:
+def sanitise_input(text: str, *, strict: bool = False) -> str:
     """
-    Validate and clean user input.
-    Raises HTTPException on malicious input.
-    Returns cleaned text.
+    Clean user input and return it.
+
+    Non-raising by default: empty / short / oversized input is normalised or
+    truncated rather than rejected, and content classification is left to the
+    guardrail layer (``app.guardrails.input_gate``), which answers in-persona.
+
+    ``strict=True`` restores the original behaviour — raise ``HTTPException``
+    400 on empty, too-short, over-length, or injection-pattern input — and is
+    used by non-conversational endpoints that expect a hard 400.
     """
     if not text or not text.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Message cannot be empty.",
-        )
+        if strict:
+            raise HTTPException(status_code=400, detail="Message cannot be empty.")
+        return ""
 
     text = text.strip()
 
-    if len(text) < MIN_MESSAGE_LENGTH:
-        raise HTTPException(
-            status_code=400,
-            detail="Message too short.",
-        )
+    if strict and len(text) < MIN_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail="Message too short.")
 
     if len(text) > MAX_MESSAGE_LENGTH:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Message too long. Max {MAX_MESSAGE_LENGTH} characters.",
-        )
-
-    # Check injection patterns
-    for pattern in COMPILED_PATTERNS:
-        if pattern.search(text):
-            logger.warning(
-                f"Injection attempt blocked: {text[:100]}"
-            )
+        if strict:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid input detected.",
+                detail=f"Message too long. Max {MAX_MESSAGE_LENGTH} characters.",
             )
+        text = text[:MAX_MESSAGE_LENGTH]
+
+    if strict:
+        for pattern in COMPILED_PATTERNS:
+            if pattern.search(text):
+                logger.warning(f"Injection attempt blocked (strict): {text[:100]}")
+                raise HTTPException(status_code=400, detail="Invalid input detected.")
 
     # Strip HTML tags
     text = re.sub(r'<[^>]+>', '', text)

@@ -19,6 +19,7 @@ redis
 sqlparse
 python-multipart
 reportlab
+langdetect
 # Auth
 pyjwt
 bcrypt
