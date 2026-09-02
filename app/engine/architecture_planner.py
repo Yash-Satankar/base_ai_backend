@@ -155,7 +155,7 @@ Use EXACTLY these module names (adapt table names to the requirement):
 Each module MUST have at least 6 tables."""
 
     system_prompt = f"""You are a Principal Database Architect designing a production {domain.replace('_', ' ')} system.
-You have designed 23 production databases. You NEVER generate generic schemas.
+You have designed 32 production databases. You NEVER generate generic schemas.
 Your task: produce a JSON blueprint — the canonical architecture before any SQL is written.
 
 THE ARCHITECT'S 10 QUESTIONS (answer for each entity):
@@ -194,6 +194,8 @@ PROPRIETARY RULES (apply all that are relevant):
 - month_year VARCHAR(7) on EVERY _transaction_all table
 - Approval chains: inline approval_1_by..approval_N_by on transaction rows
 - DECIMAL(10,2) for ALL money, closing_balance on ledger transactions
+- Every table: ENGINE=InnoDB, DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+- created_on / modified_on / *_on columns are DATETIME, never DATE
 - NO duplicate table names across modules
 
 {module_guidance}

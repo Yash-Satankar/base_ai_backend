@@ -2,8 +2,8 @@
   "metadata": {
     "name": "AI Database Rule Framework",
     "version": "2.0",
-    "description": "Complete rule library extracted from 23 production MySQL databases across 9 business domains. Use for AI schema generation, RAG retrieval, and validation.",
-    "total_rules": 94,
+    "description": "Complete rule library extracted from 32 production MySQL databases (34 schema dumps, including dev/test variants) across 9 business domains. Use for AI schema generation, RAG retrieval, and validation.",
+    "total_rules": 98,
     "domains_covered": [
       "financial",
       "HR",
@@ -22,10 +22,13 @@
       "configuration",
       "constraints",
       "convention",
+      "data_management",
+      "documents",
       "domain",
       "financial",
       "identity",
       "infrastructure",
+      "location",
       "monitoring",
       "naming",
       "operations",
@@ -653,6 +656,133 @@
       ]
     },
     {
+      "rule_id": 21,
+      "category": "infrastructure",
+      "rule_name": "Storage Engine: InnoDB Mandatory",
+      "priority": "critical",
+      "trigger_when": [
+        "creating any table",
+        "choosing a storage engine",
+        "any table that participates in transactions or foreign keys",
+        "any table with concurrent writers"
+      ],
+      "enforce": [
+        "every table must be ENGINE=InnoDB",
+        "declare ENGINE=InnoDB explicitly in every CREATE TABLE — never rely on server default",
+        "InnoDB is required for ACID transactions, row-level locking, crash recovery, and FK enforcement",
+        "the only permitted exception is a framework-owned table the framework itself defines otherwise"
+      ],
+      "avoid": [
+        "ENGINE=MyISAM — no transactions, table-level locking, corrupts on crash, no FK support",
+        "ENGINE=Aria or MEMORY for business data",
+        "mixed engines within one schema"
+      ],
+      "reason": "MyISAM has no transactions and locks the whole table on write. A crash mid-write leaves it corrupt with no automatic recovery. Production OLTP schemas must be InnoDB end to end.",
+      "examples": {
+        "valid": [
+          ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+        ],
+        "invalid": [
+          ") ENGINE=MyISAM DEFAULT CHARSET=latin1;",
+          ") ENGINE=Aria;"
+        ]
+      },
+      "tags": [
+        "infrastructure",
+        "storage_engine",
+        "innodb",
+        "myisam",
+        "transactions",
+        "production"
+      ]
+    },
+    {
+      "rule_id": 22,
+      "category": "infrastructure",
+      "rule_name": "Character Set: utf8mb4 Mandatory",
+      "priority": "high",
+      "trigger_when": [
+        "creating any table",
+        "declaring CHARSET or COLLATE",
+        "any column storing names, addresses, or free text",
+        "any multi-language or bilingual content (e.g. English + Hindi)",
+        "any column that may receive emoji or symbols"
+      ],
+      "enforce": [
+        "every table must be DEFAULT CHARSET=utf8mb4",
+        "use COLLATE=utf8mb4_unicode_ci (or utf8mb4_0900_ai_ci on MySQL 8) consistently across the schema",
+        "declare CHARSET and COLLATE explicitly in every CREATE TABLE",
+        "utf8mb4 is 4-byte and stores the full Unicode range including Devanagari and emoji"
+      ],
+      "avoid": [
+        "CHARSET=latin1 — cannot store Devanagari, Tamil, or any non-Latin script; silently mangles input",
+        "CHARSET=utf8 / utf8mb3 — 3-byte, truncates 4-byte code points including emoji",
+        "mixed charsets or collations across tables — breaks JOINs with 'illegal mix of collations' errors"
+      ],
+      "reason": "Rule 41 assumes bilingual English + Hindi content. latin1 physically cannot store Devanagari and the legacy utf8 (utf8mb3) drops 4-byte characters. Only utf8mb4 is safe for Indian-market production data.",
+      "examples": {
+        "valid": [
+          ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+        ],
+        "invalid": [
+          "DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci",
+          "DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci"
+        ]
+      },
+      "tags": [
+        "infrastructure",
+        "charset",
+        "utf8mb4",
+        "latin1",
+        "collation",
+        "localisation",
+        "india"
+      ]
+    },
+    {
+      "rule_id": 23,
+      "category": "convention",
+      "rule_name": "Temporal Column Data Types",
+      "priority": "high",
+      "trigger_when": [
+        "adding created_on, modified_on, deleted_on, or any *_on / *_at timestamp column",
+        "adding an audit or lifecycle timestamp",
+        "storing the moment an event happened"
+      ],
+      "enforce": [
+        "event/audit timestamps (created_on, modified_on, deleted_on, archived_on, *_on) must be DATETIME — never DATE",
+        "use TIMESTAMP only when automatic UTC conversion is explicitly wanted; otherwise DATETIME",
+        "DATE is permitted only for genuine calendar dates with no time component (date_of_birth, joining_date, invoice_date, valid_till)",
+        "prefer DATETIME NOT NULL with an explicit default or application-set value"
+      ],
+      "avoid": [
+        "created_on DATE / modified_on DATE — loses the time of day, making same-day ordering and SLA math impossible",
+        "storing timestamps as VARCHAR or INT epoch in business tables",
+        "mixing DATE and DATETIME for the same logical column across tables"
+      ],
+      "reason": "A DATE-typed created_on cannot distinguish two events on the same day. Dispute resolution, SLA breach detection, and event ordering all need the time component that only DATETIME/TIMESTAMP preserve.",
+      "examples": {
+        "valid": [
+          "`created_on` datetime NOT NULL",
+          "`modified_on` datetime NOT NULL",
+          "`date_of_birth` date DEFAULT NULL"
+        ],
+        "invalid": [
+          "`created_on` date NOT NULL",
+          "`modified_on` date NOT NULL"
+        ]
+      },
+      "tags": [
+        "convention",
+        "temporal",
+        "datetime",
+        "timestamp",
+        "data_type",
+        "created_on",
+        "modified_on"
+      ]
+    },
+    {
       "rule_id": 24,
       "category": "versioning",
       "rule_name": "line_no for Record Versioning",
@@ -748,6 +878,48 @@
         "balance",
         "running_balance",
         "closing_balance"
+      ]
+    },
+    {
+      "rule_id": 28,
+      "category": "audit",
+      "rule_name": "old_ Value Preservation Mechanics",
+      "priority": "high",
+      "trigger_when": [
+        "implementing Layer 2 of the Three-Layer Data Preservation rule (rule 3)",
+        "overwriting a column that has business, legal, or financial significance",
+        "any UPDATE that changes a value someone may later dispute"
+      ],
+      "enforce": [
+        "Variant A - inline old_ columns: for up to ~3 tracked fields, add a paired old_<column> beside each (old_mobile_no, old_salary, old_designation) and copy the current value into it before overwriting",
+        "Variant B - _old_ mirror table: when the whole row must be snapshotted on change, write the pre-change row into a <entity>_old_<suffix>_all table that mirrors the live table's structure exactly",
+        "choose Variant A for a few hot fields; choose Variant B (or the _archive_all table from rule 3 Layer 3) when many columns change together",
+        "always pair the preserved value with who changed it and when (modified_by, modified_on, or a life_cycle row)"
+      ],
+      "avoid": [
+        "overwriting a significant column with no record of the previous value anywhere",
+        "adding dozens of old_ columns to one table — that is the signal to switch to Variant B",
+        "using Variant A and Variant B for the same field (double bookkeeping that drifts out of sync)",
+        "confusing _old_ mirror tables (pre-change snapshots) with old_ prefixed schema-version relic tables from rule 109"
+      ],
+      "reason": "Rule 3 mandates Layer 2 preservation but the corpus implements it two different ways. Making the choice explicit stops schemas from either skipping it entirely or bolting 20 old_ columns onto a header table.",
+      "examples": {
+        "valid": [
+          "`salary` decimal(10,2) NOT NULL, `old_salary` decimal(10,2) DEFAULT NULL",
+          "employee_old_header_all mirroring employee_header_all"
+        ],
+        "invalid": [
+          "UPDATE employee_header_all SET salary = ? -- previous value lost",
+          "old_field_1 ... old_field_25 on a single header table"
+        ]
+      },
+      "tags": [
+        "audit",
+        "preservation",
+        "old_prefix",
+        "layer_2",
+        "mirror_table",
+        "history"
       ]
     },
     {

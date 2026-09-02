@@ -1,8 +1,27 @@
 # app/validators/schema_validator.py
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+_RULES_JSON_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "rules", "rules.json"
+)
+
+
+def rule_count() -> int:
+    """Live rule count from rules.json — never hard-code it."""
+    try:
+        with open(_RULES_JSON_PATH, "r", encoding="utf-8") as f:
+            return len(json.load(f)["rules"])
+    except Exception:
+        return 0
+
+
+# Backwards-compatible private alias
+_rule_count = rule_count
 
 
 @dataclass
@@ -31,7 +50,8 @@ class ValidationResult:
 
 class SchemaValidator:
     """
-    Validates generated MySQL schema against the 109 rules.
+    Validates generated MySQL schema against the rule library in
+    app/rules/rules.json (see _rule_count() for the current total).
     Returns a score (0-100) and a list of violations.
     """
 
@@ -71,6 +91,8 @@ class SchemaValidator:
         issues += self._check_money_types(sql)
         issues += self._check_archive_tables(sql, tables)
         issues += self._check_fk_naming(sql)
+        issues += self._check_engine_charset(sql)
+        issues += self._check_temporal_types(sql)
 
         # Calculate score
         scores = self._calculate_scores(issues)
@@ -227,47 +249,86 @@ class SchemaValidator:
 
         return issues
 
+    # Header entities that by nature don't need archive / lifecycle companions
+    NON_ARCHIVABLE_PATTERNS = [
+        "factory", "config", "setting", "option", "lookup",
+        "type", "category", "reference", "mapping", "junction",
+        "unique_id", "app_version", "platform", "otp", "session",
+        "log", "audit", "error", "notification_template",
+    ]
+    # Cap how many per-table preservation nudges we emit so a large schema
+    # is not buried under 100 low-severity lines.
+    _PRESERVATION_NUDGE_CAP = 12
+
     def _check_data_preservation(self, sql: str, tables: list[str]) -> list[ValidationIssue]:
+        """Three-Layer Data Preservation (rule 3) + Life Cycle Tracking (rule 4).
+
+        Every significant master entity should have an _archive_all mirror
+        (Layer 3) and, when it is status-driven, a _life_cycle_all trail.
+        This is a nudge (low severity), not a hard gate — a schema that
+        genuinely has no mutable business entities will produce no issues.
+        """
         issues = []
         header_tables = [t for t in tables if t.endswith("_header_all")]
-        archive_tables = [t for t in tables if t.endswith("_archive_all")]
+        tset = set(tables)
 
-        # If the schema has NO archive tables at all, it's a deliberate design choice.
-        # Don't penalise it — the project simply doesn't use the archive pattern.
-        if not archive_tables:
-            return []
-
-        # Tables that should NEVER require an archive companion
-        NON_ARCHIVABLE_PATTERNS = [
-            "factory", "config", "setting", "option", "lookup",
-            "type", "category", "reference", "mapping", "junction",
-            "unique_id", "app_version", "platform", "otp", "session",
-            "log", "audit", "error", "notification_template",
-        ]
-
+        significant = []
         for ht in header_tables:
-            # Skip system tables
             if ht in self.SYSTEM_TABLES:
                 continue
-
-            # Skip tables that by nature don't need archives
             ht_lower = ht.lower()
-            should_skip = any(pattern in ht_lower for pattern in NON_ARCHIVABLE_PATTERNS)
-            if should_skip:
+            if any(p in ht_lower for p in self.NON_ARCHIVABLE_PATTERNS):
                 continue
+            significant.append(ht)
 
-            base = ht.replace("_header_all", "")
-            archive = f"{base}_archive_all"
-            if archive not in tables:
-                # Only low severity — archive is a design choice, not a hard rule
-                issues.append(ValidationIssue(
-                    rule_id=3,
-                    rule_name="Data Preservation",
-                    severity="low",
-                    issue=f"'{ht}' has no corresponding archive table '{archive}'",
-                    suggestion=f"Consider creating '{archive}' for historical record keeping if needed",
-                    table_name=ht,
-                ))
+        missing_archive = []
+        missing_lifecycle = []
+        for ht in significant:
+            base = ht[: -len("_header_all")]
+            if f"{base}_archive_all" not in tset:
+                missing_archive.append(ht)
+            if f"{base}_life_cycle_all" not in tset:
+                missing_lifecycle.append(ht)
+
+        for ht in missing_archive[: self._PRESERVATION_NUDGE_CAP]:
+            base = ht[: -len("_header_all")]
+            issues.append(ValidationIssue(
+                rule_id=3,
+                rule_name="Three-Layer Data Preservation",
+                severity="low",
+                issue=f"'{ht}' has no Layer 3 archive table '{base}_archive_all'",
+                suggestion=f"Add '{base}_archive_all' — a column-for-column mirror plus archived_on / archived_by, no UNIQUE/FK",
+                table_name=ht,
+            ))
+        if len(missing_archive) > self._PRESERVATION_NUDGE_CAP:
+            issues.append(ValidationIssue(
+                rule_id=3,
+                rule_name="Three-Layer Data Preservation",
+                severity="low",
+                issue=f"{len(missing_archive)} significant entities have no _archive_all mirror "
+                      f"(showing first {self._PRESERVATION_NUDGE_CAP})",
+                suggestion="Add archive mirrors for entities whose history must survive updates",
+            ))
+
+        for ht in missing_lifecycle[: self._PRESERVATION_NUDGE_CAP]:
+            base = ht[: -len("_header_all")]
+            issues.append(ValidationIssue(
+                rule_id=4,
+                rule_name="Life Cycle Tracking",
+                severity="low",
+                issue=f"'{ht}' has no '{base}_life_cycle_all' status-transition trail",
+                suggestion=f"Add '{base}_life_cycle_all' with previous_status, new_status, changed_by, changed_on",
+                table_name=ht,
+            ))
+        if len(missing_lifecycle) > self._PRESERVATION_NUDGE_CAP:
+            issues.append(ValidationIssue(
+                rule_id=4,
+                rule_name="Life Cycle Tracking",
+                severity="low",
+                issue=f"{len(missing_lifecycle)} significant entities have no _life_cycle_all trail "
+                      f"(showing first {self._PRESERVATION_NUDGE_CAP})",
+                suggestion="Add life-cycle trails for status-driven entities with more than two states",
+            ))
 
         return issues
 
@@ -415,6 +476,110 @@ class SchemaValidator:
 
         return issues
 
+    def _check_engine_charset(self, sql: str) -> list[ValidationIssue]:
+        """Rule 21 (ENGINE=InnoDB) + Rule 22 (DEFAULT CHARSET=utf8mb4)."""
+        issues = []
+        LEGACY_CHARSETS = ("latin1", "utf8mb3", "swedish")
+
+        for name, _body, tail in self._iter_create_tables(sql):
+            if self._is_framework_table(name):
+                continue
+            tail_l = tail.lower()
+
+            engine_m = re.search(r'engine\s*=\s*(\w+)', tail_l)
+            if engine_m:
+                if engine_m.group(1) != "innodb":
+                    issues.append(ValidationIssue(
+                        rule_id=21,
+                        rule_name="Storage Engine: InnoDB Mandatory",
+                        severity="critical",
+                        issue=f"Table '{name}' uses ENGINE={engine_m.group(1)} — not InnoDB",
+                        suggestion="Change to ENGINE=InnoDB (transactions, row locking, FK support, crash recovery)",
+                        table_name=name,
+                    ))
+            else:
+                issues.append(ValidationIssue(
+                    rule_id=21,
+                    rule_name="Storage Engine: InnoDB Mandatory",
+                    severity="medium",
+                    issue=f"Table '{name}' declares no ENGINE — server default may not be InnoDB",
+                    suggestion="Append ENGINE=InnoDB to the CREATE TABLE",
+                    table_name=name,
+                ))
+
+            charset_m = re.search(r'charset\s*=\s*([\w]+)', tail_l)
+            if charset_m:
+                cs = charset_m.group(1)
+                if cs != "utf8mb4":
+                    issues.append(ValidationIssue(
+                        rule_id=22,
+                        rule_name="Character Set: utf8mb4 Mandatory",
+                        severity="high" if any(x in cs for x in LEGACY_CHARSETS) or cs == "utf8" else "medium",
+                        issue=f"Table '{name}' uses CHARSET={cs} — not utf8mb4",
+                        suggestion="Change to DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci "
+                                   "(latin1/utf8mb3 cannot store Devanagari or emoji)",
+                        table_name=name,
+                    ))
+            else:
+                issues.append(ValidationIssue(
+                    rule_id=22,
+                    rule_name="Character Set: utf8mb4 Mandatory",
+                    severity="medium",
+                    issue=f"Table '{name}' declares no DEFAULT CHARSET",
+                    suggestion="Append DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+                    table_name=name,
+                ))
+
+        return issues
+
+    def _check_temporal_types(self, sql: str) -> list[ValidationIssue]:
+        """Rule 23 — event/audit timestamps must be DATETIME/TIMESTAMP, never DATE."""
+        issues = []
+        # `col_name` <type>  — flag when an *_on column is typed plain DATE
+        pattern = re.compile(
+            r'[`"]?(\w*_on)[`"]?\s+date\b(?!time)',
+            re.IGNORECASE,
+        )
+        seen = set()
+        for m in pattern.finditer(sql):
+            col = m.group(1).lower()
+            if col in seen:
+                continue
+            seen.add(col)
+            issues.append(ValidationIssue(
+                rule_id=23,
+                rule_name="Temporal Column Data Types",
+                severity="high",
+                issue=f"Column '{col}' is typed DATE — loses time-of-day",
+                suggestion=f"Change '{col}' to DATETIME NOT NULL (DATE is only for pure calendar dates like date_of_birth)",
+            ))
+        return issues
+
+    def _iter_create_tables(self, sql: str):
+        """Yield (table_name, column_body, options_tail) for every CREATE TABLE.
+
+        Depth-counts parentheses so nested type/index parens don't confuse the
+        split, and works whether or not the dump puts ') ENGINE=...' on its own line.
+        """
+        for m in re.finditer(
+            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\(',
+            sql, re.IGNORECASE,
+        ):
+            name = m.group(1)
+            i = m.end()
+            depth = 1
+            while i < len(sql) and depth:
+                c = sql[i]
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                i += 1
+            body = sql[m.end():i - 1]
+            semi = sql.find(';', i)
+            tail = sql[i:semi] if semi != -1 else sql[i:]
+            yield name, body, tail
+
     # ── Scoring ─────────────────────────────────────────────────
 
     def _calculate_scores(self, issues: list[ValidationIssue]) -> dict:
@@ -432,10 +597,10 @@ class SchemaValidator:
         # Map rule_ids to scoring dimensions
         RULE_TO_DIMENSION = {
             "naming_convention":    [1, 36],
-            "audit_fields":         [18, 30, 8],
+            "audit_fields":         [18, 30, 8, 23],
             "financial_compliance": [7, 27, 29, 51, 57],
-            "data_preservation":    [3, 20, 43],
-            "index_constraints":    [31, 32, 33, 77],
+            "data_preservation":    [3, 4, 20, 28, 43],
+            "index_constraints":    [21, 22, 31, 32, 33, 77],
             "status_convention":    [8, 17, 56],
             "identity_system":      [2, 9, 99],
         }
@@ -505,5 +670,6 @@ class SchemaValidator:
         return (
             f"{status} | Grade: {grade} | Score: {score}/100 | "
             f"Tables: {len(tables)} | "
-            f"Issues: {critical} critical, {high} high, {medium} medium"
+            f"Issues: {critical} critical, {high} high, {medium} medium | "
+            f"Checked against {rule_count()} rules"
         )

@@ -44,11 +44,13 @@ def generate_sql_file(
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     safe_name = _safe_filename(project_name)
 
+    from app.validators.schema_validator import rule_count
+
     header = f"""-- ============================================================
 -- Project  : {project_name}
 -- Generated: {timestamp}
 -- Engine   : AI DB Schema Generator
--- Rules    : 109 production rules applied
+-- Rules    : {rule_count()} production rules applied
 -- ============================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
