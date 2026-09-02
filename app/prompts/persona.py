@@ -89,6 +89,10 @@ _FALLBACKS = {
         "I'd rather keep this constructive. Tell me what the database needs to "
         "do and we'll get it designed."
     ),
+    "recheck": (
+        "Let me make sure I've got this right — could you restate what you're "
+        "after so I don't get ahead of myself?"
+    ),
 }
 
 

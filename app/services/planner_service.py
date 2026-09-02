@@ -915,6 +915,13 @@ def generate_database_schema_for_job(
                             await run_self_improvement_loop(state.version_id, db_session)
                             await db_session.commit()
 
+                            # 4. Phase 3 checkpoint — schema is complete
+                            if state.project_id:
+                                from app.services import conversation_memory
+                                await conversation_memory.persist_checkpoint(
+                                    state, db_session, reason="schema_complete", commit=True
+                                )
+
                     try:
                         import asyncio
                         asyncio.run(save_and_learn())

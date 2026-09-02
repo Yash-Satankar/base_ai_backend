@@ -101,9 +101,11 @@ async def start_conversation(
         await verify_project_ownership(db, project_id, current_user.id)
 
     state = await create_session(db, current_user, project_id)
+    # Phase 3 — a resumed project greets with its restored context
+    greeting = state.facts.get("_resume_summary") or "Hello! Tell me about the database you want to build."
     return StartSessionResponse(
         session_id=state.session_id,
-        message="Hello! Tell me about the database you want to build.",
+        message=greeting,
         stage=state.stage,
     )
 
@@ -233,8 +235,14 @@ async def download_pdf(
 @limiter.limit("10/minute")
 async def end_session(
     request: Request,
-    session_id: str
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
 ):
-    """Delete a session when done."""
+    """Delete a session when done — first distil it into durable memory."""
+    state = get_session(session_id)
+    if state and getattr(state, "project_id", None):
+        from app.services import conversation_memory
+        await conversation_memory.persist_checkpoint(state, db, reason="session_end", commit=True)
+
     delete_session(session_id)
     return DeleteSessionResponse(message="Session ended", session_id=session_id)

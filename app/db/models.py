@@ -422,3 +422,42 @@ class OrganizationMemory(Base):
     naming_style:         Mapped[str]      = mapped_column(String(100), default="standard")      # e.g., "suffix_header_all"
     preferred_components: Mapped[dict]     = mapped_column(JSON, default=dict, nullable=False)   # Preferred packages
     updated_at:           Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+# ── Conversation Memory (durable, project-scoped) ────────────────
+
+class ConversationMemory(Base):
+    """
+    Phase 3 — durable conversation memory, one row per project.
+
+    Redis holds the live, ephemeral ConversationState for an active session
+    (24h TTL). This row is the permanent distillation: a returning user on a
+    new session for the same project resumes with the rolling summary, the
+    decisions they made, the facts we established, and the last blueprint —
+    instead of starting cold. Written only at checkpoints (blueprint
+    confirmed, schema complete, session end).
+    """
+    __tablename__ = "conversation_memories"
+
+    id:                  Mapped[str]      = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id:          Mapped[str]      = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+
+    rolling_summary:     Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    requirement_summary: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    key_decisions:       Mapped[list]     = mapped_column(JSON, default=list, nullable=False)
+    rejected_options:    Mapped[list]     = mapped_column(JSON, default=list, nullable=False)
+    facts:               Mapped[dict]     = mapped_column(JSON, default=dict, nullable=False)
+    understood_aspects:  Mapped[dict]     = mapped_column(JSON, default=dict, nullable=False)
+    last_blueprint:      Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    last_checkpoint:     Mapped[Optional[str]]  = mapped_column(String(40), nullable=True)   # why it was last written
+    updated_at:          Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("project_id", name="uq_conv_memory_project"),
+        Index("idx_conv_memory_project", "project_id"),
+    )

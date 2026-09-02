@@ -55,6 +55,7 @@ class ConversationState:
     # Phase 2 — working memory / lean loop
     rolling_summary: str = ""                                   # compacted older turns
     key_decisions: list = field(default_factory=list)           # extracted commitments the user made
+    rejected_options: list = field(default_factory=list)        # things the user explicitly turned down
     facts: dict = field(default_factory=dict)                   # per-turn caches + flags (domain, language, degrade)
 
     schema: Optional[str] = None

@@ -91,6 +91,12 @@ async def create_session(db: Optional[AsyncSession] = None, user: Optional[User]
         state.project_id = project.id
         state.version_id = version.id
 
+        # Warm-start from durable memory if this project has been worked on
+        # before (Phase 3 — returning user, new session).
+        if project_id:
+            from app.services import conversation_memory
+            await conversation_memory.rehydrate(state, db, project.id)
+
         # Link conversation session in PostgreSQL
         await project_repo.get_or_create_conversation(
             redis_session_id=session_id,
@@ -195,6 +201,14 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
                 content=response.get("message", ""),
                 metadata={"stage": str(state.stage)},
             )
+
+            # Phase 3 checkpoint — the user just confirmed the blueprint
+            if state.stage == ConversationStage.CONFIRMED and state.project_id:
+                from app.services import conversation_memory
+                await conversation_memory.persist_checkpoint(
+                    state, db, reason="blueprint_confirmed", commit=False
+                )
+
             await db.commit()
 
         save_session(state)

@@ -3,3 +3,4 @@
 # Test suite (Phase 0+). No test contacts a real Redis/Postgres/Qdrant/Groq.
 pytest
 pytest-asyncio
+aiosqlite          # in-memory async DB for the durable-memory tests

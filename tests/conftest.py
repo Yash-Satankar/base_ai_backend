@@ -26,12 +26,20 @@ os.environ.setdefault("MASTER_API_KEY", "test-master-key")
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_redis: run against the real get_redis_client (skip the _no_redis stub)",
+    )
+
+
 @pytest.fixture(autouse=True)
-def _no_redis(monkeypatch):
+def _no_redis(request, monkeypatch):
     """No test contacts a real Redis. Force the in-memory fallback everywhere
-    (otherwise `get_redis_client()` re-attempts a 5s socket timeout on every
-    call, since it does not cache the failure). Patch every module that
-    imported the symbol by name."""
+    (otherwise `get_redis_client()` re-attempts a socket timeout on every call).
+    Tests marked ``real_redis`` opt out to exercise the connection logic."""
+    if "real_redis" in request.keywords:
+        return
     for modname in (
         "app.db.session_store",
         "app.conversation.llm_client",
