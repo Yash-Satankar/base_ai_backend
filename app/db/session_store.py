@@ -1,7 +1,7 @@
-import pickle
 import logging
 from typing import Optional
 from app.core.config import settings
+from app.db import session_codec
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ def get_redis_client():
             import redis
             _redis_client = redis.Redis.from_url(
                 settings.REDIS_URL,
-                decode_responses=False,     # we store binary (pickle)
+                decode_responses=False,     # we store bytes (see session_codec)
                 socket_timeout=5,
                 socket_connect_timeout=5,
                 retry_on_timeout=True,
@@ -49,7 +49,7 @@ def save_session(state) -> bool:
             client.setex(
                 session_key,
                 settings.REDIS_SESSION_TTL,
-                pickle.dumps(state),
+                session_codec.encode(state),
             )
             return True
         except Exception as e:
@@ -74,7 +74,7 @@ def load_session(session_id: str) -> Optional[object]:
         try:
             data = client.get(session_key)
             if data:
-                return pickle.loads(data)
+                return session_codec.decode(data)
             return None
         except Exception as e:
             logger.error(f"Redis load failed: {e}")

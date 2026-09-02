@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # Linux runners have no Application Control policy blocking the qdrant
+    # grpc native wheel, so the full app import chain loads here.
+    env:
+      DEBUG: "true"
+      GROQ_API_KEY: "ci-test-key"
+      QDRANT_URL: "http://localhost:6333"
+      QDRANT_API_KEY: "ci-test-key"
+      DATABASE_URL: "postgresql+asyncpg://user:pass@localhost:5432/testdb"
+      REDIS_URL: "redis://localhost:6379/0"
+      MASTER_API_KEY: "ci-master-key"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        # No test contacts a real Redis/Postgres/Qdrant/Groq — external
+        # calls are monkeypatched or their dependencies overridden.
+        run: pytest -v

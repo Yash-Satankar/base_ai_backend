@@ -2,10 +2,13 @@
 
 import json
 import os
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 from app.db.connection import get_qdrant_client, embed_text, ensure_collection_exists
 from app.core.config import settings
 import logging
+
+# NOTE: `qdrant_client` (native grpc extension) is imported lazily inside the
+# functions that need it so importing this module — and therefore the app —
+# does not require the qdrant wheel to be importable.
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,8 @@ def seed_rules_to_qdrant():
     Run this once when setting up the project.
     Safe to re-run — it overwrites existing points with same IDs.
     """
+    from qdrant_client.models import PointStruct
+
     ensure_collection_exists()
     client = get_qdrant_client()
     rules = load_rules_from_file()
@@ -131,6 +136,8 @@ def search_rules(query: str, top_k: int = None, category_filter: str = None) -> 
     k = top_k or settings.TOP_K_RULES
 
     try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
         client = get_qdrant_client()
         query_vector = embed_text(query)
 

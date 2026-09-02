@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Test suite (Phase 0+). No test contacts a real Redis/Postgres/Qdrant/Groq.
+pytest
+pytest-asyncio

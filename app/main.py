@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.logger import setup_logging
 from app.core.security import limiter
 from app.core.logging_middleware import StructuredLoggingMiddleware
+from app.prompts.persona import fallback as persona_fallback
 from app.api.routes import ai, health, planner, rules, conversation, auth, projects, dashboard, developer_api, validation, learning
 from app.db.database import init_db
 
@@ -47,6 +48,21 @@ app.add_middleware(
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = getattr(request.state, "request_id", "unknown")
     # StructuredLoggingMiddleware will catch and log the full traceback as JSON.
+
+    # Conversational routes must always answer as the assistant — never a raw
+    # 5xx — even if the failure happens outside the route's own handling.
+    if request.url.path.startswith("/conversation/"):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": False,
+                "session_id": None,
+                "message": persona_fallback("turn_error"),
+                "stage": "unknown",
+                "request_id": request_id,
+            },
+        )
+
     # Here we return a clean, user-friendly response with the request_id.
     return JSONResponse(
         status_code=500,

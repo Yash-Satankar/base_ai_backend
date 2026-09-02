@@ -40,12 +40,24 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
 
+    # Debug response projection — comma-separated staff emails allowed to
+    # request the internal `X-Debug: true` view (L1-L7 metadata, rule IDs,
+    # provider/model names). Empty by default → only the master API key qualifies.
+    DEBUG_VIEW_EMAILS: str = ""
+
     # Embedding
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     EMBEDDING_DIMENSION: int = 384
 
     def get_allowed_origins(self) -> list[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
+
+    def get_debug_view_emails(self) -> set[str]:
+        return {
+            e.strip().lower()
+            for e in self.DEBUG_VIEW_EMAILS.split(",")
+            if e.strip()
+        }
 
     class Config:
         env_file = ".env"

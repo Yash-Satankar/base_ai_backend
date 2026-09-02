@@ -26,9 +26,35 @@ from app.services.planner_service import (
 from app.services.job_store import get_job_store
 from app.engine.architecture_planner import generate_deep_blueprint
 from app.engine.rule_matcher import detect_domain
+from app.core.debug_gate import require_debug_view
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _lean_job_result(result: dict) -> dict:
+    """
+    Strip internal architecture detail from a finished job result for the
+    default (non-debug) contract: no L1-L7 metadata, no provider/model names,
+    no rule IDs or validator breakdown. Keeps the schema, the plain
+    generation summary, and the headline validation score.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    lean: dict = {}
+    if "schema" in result:
+        lean["schema"] = result["schema"]
+    if "generation_summary" in result:
+        lean["generation_summary"] = result["generation_summary"]
+
+    v = result.get("validation")
+    if isinstance(v, dict):
+        lean["validation"] = {
+            k: v[k] for k in ("score", "passed", "grade", "summary") if k in v
+        }
+
+    return lean
 
 
 # ── POST /planner/generate  (async — returns job_id immediately) ──
@@ -81,6 +107,7 @@ async def generate_schema_endpoint(
 async def get_job_status(
     request: Request,
     job_id: str,
+    debug_view: bool = Depends(require_debug_view),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
@@ -89,8 +116,12 @@ async def get_job_status(
     Response `status` values:
     - `queued`     — job is waiting to start
     - `generating` — generation is in progress (check `progress` field)
-    - `done`       — complete; full schema is in `result`
+    - `done`       — complete; schema is in `result`
     - `failed`     — generation failed; see `error` field
+
+    By default `result` is lean (schema + summary + headline score). The full
+    internal payload (L1-L7, rules, provider) is served only for a staff
+    `X-Debug: true` request.
     """
     store = get_job_store()
     job   = store.get(job_id)
@@ -98,12 +129,16 @@ async def get_job_status(
     if not job or not store.verify_ownership(job_id, current_user.id if current_user else None):
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
 
+    result = job.get("result")            # None until done
+    if result is not None and not debug_view:
+        result = _lean_job_result(result)
+
     return JobStatusResponse(
         success=True,
         job_id=job_id,
         status=job["status"],
         progress=job.get("progress"),
-        result=job.get("result"),          # None until done
+        result=result,
         error=job.get("error"),
         created_at=job.get("created_at"),
         started_at=job.get("started_at"),

@@ -2,7 +2,8 @@
 
 import logging
 from fastapi import APIRouter, HTTPException, Request, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.encoders import jsonable_encoder
 import os
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
@@ -17,10 +18,16 @@ from app.core.security import (
     verify_api_key,
     sanitise_input,
 )
+from app.core.debug_gate import require_debug_view
+from app.prompts.persona import fallback as persona_fallback
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.core.auth import get_current_user_optional
 from app.db.models import User
+
+# HTTP status codes that carry meaning for the client and must NOT be
+# swallowed into an in-persona turn (auth, rate-limit, not-found, bad-request).
+_CLIENT_ERROR_CODES = {400, 401, 403, 404, 422, 429}
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,20 +60,27 @@ class MessageRequest(BaseModel):
 
 
 class MessageResponse(BaseModel):
+    # Lean, default conversational contract. Internal detail (L1-L7 metadata,
+    # rule IDs, validator breakdown, provider/model names) is intentionally
+    # NOT here — it is only served on the debug projection (see require_debug_view).
     session_id: str
     message: str
     stage: str
     detected_domain: Optional[str] = None
     blueprint: Optional[dict] = None
     schema_sql: Optional[str] = Field(None, alias="schema")
-    validation: Optional[dict] = None
-    metadata: Optional[dict] = None
     ready_to_generate: bool = False
     requirement: Optional[str] = None
     additional_context: Optional[str] = None
     download_urls: Optional[dict] = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+# Keys produced by the conversation engine that carry internal architecture
+# detail. Stripped from the default response; passed through only for a
+# staff `X-Debug: true` request.
+_DEBUG_ONLY_KEYS = {"metadata", "validation"}
 
 
 @router.post("/start", response_model=StartSessionResponse)
@@ -98,12 +112,18 @@ async def start_conversation(
 async def send_message(
     request: Request,
     body: MessageRequest,
+    debug_view: bool = Depends(require_debug_view),
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Send a message to the active session and get the next response.
     Triggers intent detection, clarification, or blueprint generation.
+
+    A conversational turn never fails with a 5xx: if anything downstream
+    breaks, the assistant answers in-persona and the stage is preserved so
+    the user can simply continue. Only genuine client-side conditions
+    (bad request, auth, not-found, rate limit) are surfaced as error codes.
     """
     # Sanitise input
     clean_message = sanitise_input(body.message)
@@ -115,20 +135,36 @@ async def send_message(
             detail="Session not found. Please start a new session.",
         )
 
+    response = None
     try:
         response = await process_message(body.session_id, clean_message, db, current_user)
+    except HTTPException as he:
+        if he.status_code in _CLIENT_ERROR_CODES:
+            raise
+        logger.error(
+            f"Conversation turn failed ({he.status_code}): {he.detail}",
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(f"Conversation turn failed: {e}", exc_info=True)
+
+    if response is None:
+        latest = get_session(body.session_id) or state
+        stage_val = (
+            latest.stage.value if latest and latest.stage else "unknown"
+        )
         return MessageResponse(
-            **response,
+            session_id=body.session_id,
+            message=persona_fallback("turn_error", stage=stage_val),
+            stage=stage_val,
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Message processing failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to process message. Please try again.",
-        )
+    if debug_view:
+        # Staff-only: pass the full engine payload through untouched.
+        return JSONResponse(content=jsonable_encoder(response))
+
+    lean = {k: v for k, v in response.items() if k not in _DEBUG_ONLY_KEYS}
+    return MessageResponse(**lean)
 
 
 @router.get("/session/{session_id}", response_model=SessionStatusResponse)

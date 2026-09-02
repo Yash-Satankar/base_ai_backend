@@ -1,21 +1,25 @@
 # app/db/connection.py
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
-from sentence_transformers import SentenceTransformer
-from app.core.config import settings
+from __future__ import annotations
+
 import logging
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Single shared instances
-_qdrant_client: QdrantClient = None
-_embedding_model: SentenceTransformer = None
+# Single shared instances. Heavy optional dependencies (qdrant-client, which
+# pulls in a native grpc extension, and sentence-transformers) are imported
+# lazily inside the functions below so that simply importing the app does not
+# require them — keeps startup light and lets the test suite import the app
+# in environments where those native wheels are unavailable/blocked.
+_qdrant_client = None
+_embedding_model = None
 
 
-def get_qdrant_client() -> QdrantClient:
+def get_qdrant_client():
     global _qdrant_client
     if _qdrant_client is None:
+        from qdrant_client import QdrantClient
         _qdrant_client = QdrantClient(
             url=settings.QDRANT_URL,
             api_key=settings.QDRANT_API_KEY,
@@ -25,9 +29,10 @@ def get_qdrant_client() -> QdrantClient:
     return _qdrant_client
 
 
-def get_embedding_model() -> SentenceTransformer:
+def get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
         _embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
         logger.info(f"✅ Embedding model loaded: {settings.EMBEDDING_MODEL}")
     return _embedding_model
@@ -42,6 +47,8 @@ def embed_text(text: str) -> list[float]:
 
 def ensure_collection_exists():
     """Create Qdrant collection if it doesn't exist yet."""
+    from qdrant_client.models import Distance, VectorParams
+
     client = get_qdrant_client()
     existing = [c.name for c in client.get_collections().collections]
 
