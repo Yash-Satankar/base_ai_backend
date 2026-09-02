@@ -53,6 +53,10 @@ class GenerateSchemaRequest(BaseModel):
         None,
         description="Optional conversation session ID to link updates back to the chat"
     )
+    mode: str = Field(
+        "schema",
+        description='"schema" (default) runs full SQL generation; "blueprint" runs only the L1-L8 blueprint compile'
+    )
 
 
 class MatchRulesRequest(BaseModel):

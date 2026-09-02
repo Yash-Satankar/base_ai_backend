@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     TOP_K_RULES: int = 15
     AI_TIMEOUT_SECONDS: int = 120
 
+    # Conversational loop (Phase 2)
+    # Soft cost ceiling per conversation. There is NO hard stop — once a
+    # conversation crosses this, clarifying rounds silently switch to the
+    # cheaper model and push toward the blueprint sooner. The user never
+    # sees anything about it; a single WARNING is logged for review.
+    CONVERSATION_COST_WARN_USD: float = 0.05
+    DEGRADE_MODEL: str = "llama-3.1-8b-instant"
+    LLM_CACHE_TTL_SECONDS: int = 3600
+    CONTEXT_COMPACT_AFTER_TURNS: int = 12    # fold older turns into a rolling summary past this
+
     # Qdrant
     QDRANT_URL: str
     QDRANT_API_KEY: str

@@ -73,6 +73,7 @@ class MessageResponse(BaseModel):
     requirement: Optional[str] = None
     additional_context: Optional[str] = None
     download_urls: Optional[dict] = None
+    mode: Optional[str] = None          # "blueprint" when the frontend should run the compile job
 
     model_config = ConfigDict(populate_by_name=True)
 

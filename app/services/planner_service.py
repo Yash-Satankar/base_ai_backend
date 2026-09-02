@@ -459,6 +459,7 @@ def generate_database_schema_for_job(
     blueprint: dict = None,
     additional_context: str = None,
     session_id: str = None,
+    mode: str = "schema",
 ) -> None:
     """
     Runs the full schema generation pipeline and keeps the job store
@@ -467,7 +468,15 @@ def generate_database_schema_for_job(
     Designed to be called via asyncio.to_thread() so it never blocks
     FastAPI's event loop.  Progress updates fire after every module
     batch so the frontend can poll and show a live progress bar.
+
+    ``mode="blueprint"`` diverts to the L1-L8 blueprint compile job
+    instead of full SQL generation (Phase 2).
     """
+    if mode == "blueprint":
+        from app.conversation.blueprint_job import run_blueprint_job
+        run_blueprint_job(job_id, session_id, requirement)
+        return
+
     from app.services.job_store import get_job_store
     store = get_job_store()
 

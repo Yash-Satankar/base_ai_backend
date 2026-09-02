@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 class ConversationStage(str, Enum):
     INITIAL         = "initial"           # User just described project
     CLARIFYING      = "clarifying"        # AI dynamically asking questions round-by-round
+    COMPILING       = "compiling"         # L1-L8 blueprint compile running as an async job
     BLUEPRINT       = "blueprint"         # Showing table plan for confirmation
     CONFIRMED       = "confirmed"         # User confirmed — ready to generate
     GENERATING      = "generating"        # Schema being generated
@@ -50,6 +51,12 @@ class ConversationState:
     clarifications_done: int = 0
     questions_asked: list[str] = field(default_factory=list)   # track what was already asked
     understood_aspects: dict = field(default_factory=dict)      # accumulated understanding
+
+    # Phase 2 — working memory / lean loop
+    rolling_summary: str = ""                                   # compacted older turns
+    key_decisions: list = field(default_factory=list)           # extracted commitments the user made
+    facts: dict = field(default_factory=dict)                   # per-turn caches + flags (domain, language, degrade)
+
     schema: Optional[str] = None
     validation_score: Optional[int] = None
     fix_attempts: int = 0
@@ -88,182 +95,125 @@ class ConversationState:
         return "\n".join(lines)
 
 
-# ── Dynamic AI-powered clarifying question generator ────────────
+# ── Clarification: one structured call per turn ─────────────────
+#
+# Phase 2 merges what used to be two LLM round-trips per clarifying turn
+# (assess_understanding + generate_dynamic_clarifying_questions) into a
+# single structured call. One call = lower cost and no chance of the model
+# contradicting itself between the two.
 
-def generate_dynamic_clarifying_questions(
-    state: ConversationState,
-    domain: str,
-) -> dict:
-    """
-    Use the LLM to dynamically generate the next batch of clarifying questions
-    based on what has been discussed so far and what gaps remain.
+def _strip_json(content: str) -> dict:
+    content = (content or "").strip()
+    if "```" in content:
+        for part in content.split("```"):
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            if part.startswith("{"):
+                content = part
+                break
+    return json.loads(content)
 
-    Returns a dict:
-    {
-        "questions": ["q1", "q2", ...],
-        "understood_so_far": "summary of what AI knows",
-        "confidence": 0-100,  # how well the AI understands the project
-        "ready_for_blueprint": bool
-    }
-    """
-    from app.services.ai_service import generate_schema
 
-    conversation_transcript = state.get_conversation_so_far()
-    asked_questions = "\n".join(f"- {q}" for q in state.questions_asked) if state.questions_asked else "None yet"
-    round_number = state.clarifications_done + 1
+_CLARIFY_SYSTEM = """You are a database design partner in a discovery conversation with a client.
+In ONE pass you must both (a) assess how well you now understand the project and
+(b) ask the next most valuable clarifying questions.
 
-    system_prompt = """You are a senior database architect having a discovery conversation with a client.
-Your goal is to understand their project deeply enough to design a perfect, production-ready database schema.
+Rules for the questions:
+- 3-4 by default; SPECIFIC to what the user has actually described, never generic
+- drill into edge cases, business rules, relationships, data volumes, integrations
+- conversational language, not technical; never repeat a question already asked
 
-You must:
-1. Analyze what you already know from the conversation
-2. Identify the MOST IMPORTANT remaining gaps in your understanding
-3. Ask 3-4 targeted, specific questions that will maximally improve your understanding
-4. Each question must dig deeper than surface-level — ask about edge cases, business rules, relationships, data volumes, and integrations
-5. Questions should be conversational and easy to understand — not technical
-6. Avoid asking questions already answered in the conversation
-7. Assess your current understanding confidence (0-100%)
+Round guidance: R1 core entities/users/workflows · R2 relationships/edge cases/rules ·
+R3 scale/integrations/compliance · R4+ operational exceptions.
 
-CRITICAL: Questions must be SPECIFIC to what the user has described. Do NOT ask generic questions like "what is the purpose?" — you already have the initial description.
-Instead, drill down into specifics: Who uses what? What happens when X occurs? How does Y relate to Z?
-
-Round-specific guidance:
-- Round 1: Ask about core entities, users, and primary workflows
-- Round 2: Ask about relationships, edge cases, and business rules  
-- Round 3: Ask about scale, integrations, notifications, and compliance
-- Round 4+: Ask about very specific operational scenarios and exceptions
-
-Return ONLY valid JSON with this exact structure:
+Return ONLY valid JSON, exactly this shape:
 {
-  "understood_so_far": "2-3 sentence summary of what you understand about this project so far",
+  "understood_so_far": "2-3 sentence summary of the project as you understand it now",
+  "one_line_summary": "a ~10-word summary",
   "confidence": 65,
+  "understood": {
+    "project_type": "...", "core_entities": [], "user_types": [],
+    "key_workflows": [], "scale": "small|medium|large|unknown",
+    "special_requirements": [], "integrations": []
+  },
   "key_gaps": ["gap 1", "gap 2"],
   "questions": [
-    {
-      "id": 1,
-      "question": "The actual question to ask",
-      "why_important": "Brief reason this matters for the schema"
-    }
+    {"id": 1, "question": "the question", "why_important": "why it matters for the schema"}
   ],
   "ready_for_blueprint": false
 }
+Set ready_for_blueprint true ONLY when confidence >= 85 and every major aspect is covered."""
 
-Set ready_for_blueprint to true ONLY if confidence >= 85 AND all major aspects are covered."""
 
-    user_prompt = f"""Domain detected: {domain}
+def run_clarify_turn(
+    state: "ConversationState",
+    domain: str,
+    transcript: str,
+    *,
+    round_number: int,
+    degrade: bool = False,
+    language_ack: Optional[str] = None,
+) -> dict:
+    """
+    One structured LLM call that both assesses understanding and produces the
+    next clarifying questions. Returns the merged dict (see _CLARIFY_SYSTEM).
+    Falls back to a safe generic set on any failure.
+    """
+    from app.conversation.llm_client import call_llm
+
+    asked = "\n".join(f"- {q}" for q in state.questions_asked) if state.questions_asked else "None yet"
+
+    system_prompt = _CLARIFY_SYSTEM
+    if degrade:
+        system_prompt += (
+            "\n\nBe efficient: ask at most 2 questions, and if you already have a "
+            "workable picture set ready_for_blueprint to true."
+        )
+    if language_ack:
+        system_prompt += "\n\n" + language_ack
+
+    user_prompt = f"""Domain: {domain}
 Clarification round: {round_number}
 
 CONVERSATION SO FAR:
-{conversation_transcript}
+{transcript}
 
-QUESTIONS ALREADY ASKED (do NOT repeat these):
-{asked_questions}
+QUESTIONS ALREADY ASKED (do NOT repeat):
+{asked}
 
-Based on the above, generate the next best set of clarifying questions to fill the gaps in your understanding.
-Focus on what you DON'T yet know that would significantly impact the database design."""
+Assess your understanding and ask the next best questions."""
 
     try:
-        response = generate_schema(
+        response = call_llm(
+            operation="clarify_turn",
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            session_id=state.session_id,
+            project_id=state.project_id,
+            degrade=degrade,
         )
-        content = response["content"].strip()
-
-        # Strip markdown fences
-        if "```" in content:
-            parts = content.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    part = part[4:].strip()
-                if part.startswith("{"):
-                    content = part
-                    break
-
-        data = json.loads(content)
+        data = _strip_json(response["content"])
         logger.info(
-            f"🧠 Dynamic questions generated — confidence: {data.get('confidence', 0)}% "
-            f"| ready: {data.get('ready_for_blueprint', False)}"
+            f"🧠 Clarify turn — confidence: {data.get('confidence', 0)}% "
+            f"| ready: {data.get('ready_for_blueprint', False)} | degrade: {degrade}"
         )
         return data
-
     except Exception as e:
-        logger.error(f"Dynamic question generation failed: {e}")
-        # Fallback to basic questions
+        logger.error(f"Clarify turn failed: {e}")
         return {
             "understood_so_far": "I understand you want to build a database system.",
+            "one_line_summary": "Project under analysis",
             "confidence": 40,
+            "understood": {},
             "key_gaps": ["scale", "users", "core entities"],
             "questions": [
-                {
-                    "id": 1,
-                    "question": "Who are the main types of users of this system, and what are their primary roles?",
-                    "why_important": "Determines the user management and permission structure"
-                },
-                {
-                    "id": 2,
-                    "question": "What is the single most important workflow this system needs to support?",
-                    "why_important": "Identifies the core transaction tables needed"
-                },
-                {
-                    "id": 3,
-                    "question": "Roughly how many records do you expect per day — hundreds, thousands, or millions?",
-                    "why_important": "Determines indexing strategy and table partitioning"
-                }
+                {"id": 1, "question": "Who are the main types of users, and what do they each do?",
+                 "why_important": "Determines the user and permission structure"},
+                {"id": 2, "question": "What is the single most important workflow this system must support?",
+                 "why_important": "Identifies the core transaction tables"},
+                {"id": 3, "question": "Roughly how many records per day — hundreds, thousands, or millions?",
+                 "why_important": "Determines indexing and partitioning strategy"},
             ],
-            "ready_for_blueprint": False
+            "ready_for_blueprint": False,
         }
-
-
-def assess_understanding(state: ConversationState, domain: str) -> dict:
-    """
-    After each user answer, ask the AI to assess how well it now understands the project
-    and summarise the accumulated knowledge.
-    """
-    from app.services.ai_service import generate_schema
-
-    conversation_transcript = state.get_conversation_so_far()
-
-    system_prompt = """You are a database architect assessing your understanding of a client's project.
-Review the conversation and determine:
-1. What you now understand clearly
-2. What is still ambiguous or missing
-3. Your overall confidence level (0-100%)
-
-Return ONLY valid JSON:
-{
-  "understood": {
-    "project_type": "...",
-    "core_entities": ["entity1", "entity2"],
-    "user_types": ["admin", "customer"],
-    "key_workflows": ["workflow1"],
-    "scale": "small|medium|large|unknown",
-    "special_requirements": ["gst", "notifications", etc],
-    "integrations": ["payment gateway", etc]
-  },
-  "still_unclear": ["aspect1", "aspect2"],
-  "confidence": 72,
-  "one_line_summary": "A 10-word summary of the project"
-}"""
-
-    user_prompt = f"""Conversation transcript:
-{conversation_transcript}
-
-Assess your understanding."""
-
-    try:
-        response = generate_schema(system_prompt=system_prompt, user_prompt=user_prompt)
-        content = response["content"].strip()
-        if "```" in content:
-            parts = content.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    part = part[4:].strip()
-                if part.startswith("{"):
-                    content = part
-                    break
-        return json.loads(content)
-    except Exception as e:
-        logger.error(f"Understanding assessment failed: {e}")
-        return {"confidence": 50, "one_line_summary": "Project under analysis", "understood": {}, "still_unclear": []}

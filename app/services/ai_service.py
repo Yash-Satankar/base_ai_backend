@@ -33,30 +33,36 @@ def generate_schema(
     system_prompt: str,
     user_prompt: str,
     max_tokens: Optional[int] = None,
+    model: Optional[str] = None,
 ) -> dict:
     """
     Central function to generate schema using the configured AI provider.
     Switch provider by changing AI_PROVIDER in .env
+
+    ``model`` optionally forces a specific model to the front of the
+    fallback chain (used by the conversational cost-degrade path).
     """
 
     provider = settings.AI_PROVIDER.lower()
     logger.info(f"🤖 Generating schema using provider: {provider}")
 
     if provider == "groq":
-        return _generate_with_groq(system_prompt, user_prompt, max_tokens)
+        return _generate_with_groq(system_prompt, user_prompt, max_tokens, model)
     elif provider == "anthropic":
         return _generate_with_anthropic(system_prompt, user_prompt, max_tokens)
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq' or 'anthropic'.")
 
 
-def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None) -> dict:
+def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None,
+                        model: Optional[str] = None) -> dict:
     """Generate using Groq — with multi-model fallback and 429/413 retry logic."""
     client = get_groq_client()
 
     # Fallback model chain to ensure extremely high availability on free tier quotas
     models_to_try = [
-        settings.GROQ_MODEL,          # "llama-3.3-70b-versatile"
+        model or settings.GROQ_MODEL,   # forced model (cost-degrade) or default
+        settings.GROQ_MODEL,
         "llama-3.1-8b-instant",
         "qwen/qwen3.6-27b",
         "openai/gpt-oss-120b"

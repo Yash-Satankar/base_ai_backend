@@ -73,6 +73,7 @@ async def generate_schema_endpoint(
     This endpoint never blocks — generation runs in a background thread.
     """
     clean_req = sanitise_input(body.requirement, strict=True)
+    mode = body.mode if body.mode in ("schema", "blueprint") else "schema"
 
     owner_id = current_user.id if current_user else None
     store  = get_job_store()
@@ -87,10 +88,11 @@ async def generate_schema_endpoint(
             body.blueprint,
             body.additional_context,
             body.session_id,
+            mode,
         )
     )
 
-    logger.info(f"📥 Job queued: {job_id[:8]}... | owner: {owner_id} | req: {clean_req[:60]}")
+    logger.info(f"📥 Job queued ({mode}): {job_id[:8]}... | owner: {owner_id} | req: {clean_req[:60]}")
 
     return SubmitJobResponse(
         success=True,

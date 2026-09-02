@@ -30,11 +30,13 @@ from app.engine.conversation_engine import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _ENVELOPE_MARKER = "conversation_state_json"
 
 # version N -> N+1 transform applied to the inner ``data`` dict.
-# Empty in Phase 0; add entries here when ConversationState changes shape.
+# v1 -> v2 (Phase 2) added rolling_summary / key_decisions / facts to
+# ConversationState — all with dataclass defaults, so no explicit migration
+# is required (``_build_state`` fills missing fields from the defaults).
 _MIGRATIONS: dict[int, Any] = {}
 
 

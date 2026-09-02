@@ -7,7 +7,6 @@ business requirements into structured database designs through 9 levels.
 import json
 import logging
 from typing import Tuple, Any
-from app.services.ai_service import generate_schema
 from app.schemas.abstraction_schemas import (
     L1_UnderstandingSpec,
     L2_CapabilitySpec,
@@ -20,6 +19,21 @@ from app.schemas.abstraction_schemas import (
 from app.schemas.blueprint_schema import BlueprintSpec, BlueprintModuleSpec, BlueprintTableSpec, TableType
 
 logger = logging.getLogger(__name__)
+
+
+def generate_schema(system_prompt: str, user_prompt: str, max_tokens: int = None) -> dict:
+    """
+    Local shim: every L1-L8 compile call goes through the tagged llm_client so
+    it is cost-attributed to the conversation (via ambient context set by the
+    blueprint job) and counts toward the warn-and-degrade budget.
+    """
+    from app.conversation.llm_client import call_llm
+    return call_llm(
+        operation="blueprint_compile",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=max_tokens,
+    )
 
 
 def _clean_and_parse_json(content: str) -> dict:

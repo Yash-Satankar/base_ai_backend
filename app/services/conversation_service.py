@@ -7,8 +7,6 @@ from app.engine.conversation_engine import (
     ConversationState,
     ConversationStage,
     ProjectBlueprint,
-    generate_dynamic_clarifying_questions,
-    assess_understanding,
 )
 from app.engine.rule_matcher import detect_domain, detect_all_domains
 from app.services.ai_service import generate_schema
@@ -221,271 +219,16 @@ async def process_message(session_id: str, user_message: str, db: Optional[Async
             "session_id": state.session_id,
         })
 
-    # ── Step 1: Detect intent ────────────────────────────────────
-    intent = detect_intent(user_message, state)
-    logger.info(
-        f"🎯 Intent: {intent.type} "
-        f"(confidence: {intent.confidence}) "
-        f"| Stage: {state.stage}"
-    )
+    # ── Observe → Think → Act (the lean turn loop) ─────────────
+    from app.conversation.turn_loop import run_turn
+    response = await run_turn(state, user_message, assessment)
 
-    # ── Step 2: Handle cross-stage intents first ─────────────────
-    if intent.type == IntentType.START_OVER:
-        response = handle_start_over(state)
-
-    elif intent.type == IntentType.AMBIGUOUS and state.stage not in [
-        ConversationStage.INITIAL, ConversationStage.CLARIFYING
-    ]:
-        response = handle_ambiguous(state, user_message, intent)
-
-    elif intent.type == IntentType.CONTEXT_SWITCH:
-        response = handle_context_switch(state, user_message)
-
-    elif intent.type == IntentType.PASTE_SQL:
-        response = handle_paste_sql(state, user_message)
-
-    elif intent.type == IntentType.EXPLAIN:
-        response = handle_explain(state, user_message, intent)
-
-    elif intent.type == IntentType.DOWNLOAD:
-        response = handle_download_request(state, intent)
-
-    elif intent.type == IntentType.REGENERATE:
-        response = handle_regenerate(state)
-        if response.get("ready_to_generate"):
-            response = _handle_generation(state)
-
-    # ── Step 3: Handle "where am I?" confusion ───────────────────
-    elif user_message.lower().strip() in [
-        "status", "where are we", "what's happening",
-        "whats happening", "progress", "summary"
-    ]:
-        response = handle_session_summary(state)
-
-    # ── Step 4: Stage-specific routing ──────────────────────────
-    elif state.stage == ConversationStage.INITIAL:
-        response = _handle_initial(state, user_message)
-
-    elif state.stage == ConversationStage.CLARIFYING:
-        response = _handle_clarifying(state, user_message)
-
-    elif state.stage == ConversationStage.BLUEPRINT:
-        if intent.type == IntentType.CONFIRM:
-            response = _handle_blueprint_confirmation(state, "yes")
-        elif intent.type == IntentType.CONFIRM_WITH_CHANGE:
-            response = handle_confirm_with_change(state, user_message, intent)
-        elif intent.type in [IntentType.EDIT, IntentType.ADD, IntentType.REMOVE]:
-            state.requirement_summary += f"\n\nUser modification: {user_message}"
-            response = _handle_blueprint_confirmation(state, user_message)
-        else:
-            response = _handle_blueprint_confirmation(state, user_message)
-
-    elif state.stage == ConversationStage.CONFIRMED:
-        response = _handle_generation(state)
-
-    elif state.stage == ConversationStage.GENERATING:
-        # User sent a message while generation is in progress or after a timeout failure.
-        # REGENERATE intent (continue/retry/resume) re-triggers generation.
-        if intent.type == IntentType.REGENERATE:
-            state.schema = None
-            state.validation_score = None
-            state.fix_attempts = 0
-            state.sql_file_path = None
-            state.pdf_file_path = None
-            state.stage = ConversationStage.CONFIRMED
-            response = _handle_generation(state)
-        else:
-            response = {
-                "message": (
-                    "⏳ Schema generation is still in progress — please wait.\n\n"
-                    "If it seems stuck or timed out, type **continue generating** or **retry** "
-                    "to start a fresh generation attempt."
-                ),
-                "stage": state.stage,
-                "session_id": state.session_id,
-            }
-
-    elif state.stage == ConversationStage.COMPLETE:
-        if intent.type == IntentType.CONFIRM:
-            response = handle_download_request(state, intent)
-        elif intent.type == IntentType.QUESTION:
-            response = handle_question(state, user_message, intent)
-        else:
-            response = {
-                "message": (
-                    "✅ Your schema is complete!\n\n"
-                    "- Type **download** to get your SQL and PDF files\n"
-                    "- Type **explain [table name]** to understand a table\n"
-                    "- Type **start over** to build a new schema"
-                ),
-                "stage": state.stage,
-                "session_id": state.session_id,
-            }
-
-    else:
-        response = {
-            "message": "Something unexpected happened. Type **start over** to begin fresh.",
-            "stage": state.stage,
-            "session_id": state.session_id,
-        }
-
-    # ── Step 5: output-guard, record assistant turn, persist ────
+    # ── Verify + record assistant turn + persist ──────────────
     return await _finalize(response)
 
 
 
 # ── Stage handlers ───────────────────────────────────────────────
-
-def _handle_initial(state: ConversationState, user_message: str) -> dict:
-    """
-    First message from user — store it, detect domain, and start
-    the dynamic AI-powered clarification loop. No static questions.
-    """
-    primary_domain, confidence = detect_domain(user_message)
-    all_domains = detect_all_domains(user_message)
-
-    # Store the initial requirement
-    state.requirement_summary = user_message
-    state.stage = ConversationStage.CLARIFYING
-
-    logger.info(f"🚀 Starting dynamic clarification — domain: {primary_domain}, confidence: {confidence}")
-
-    # Generate first round of AI-powered questions
-    q_data = generate_dynamic_clarifying_questions(state, primary_domain)
-
-    questions = q_data.get("questions", [])
-    understood = q_data.get("understood_so_far", "")
-    confidence_pct = q_data.get("confidence", 0)
-
-    # Track asked questions
-    state.questions_asked.extend([q["question"] for q in questions])
-    state.understood_aspects = q_data.get("understood", {})
-
-    questions_text = _format_questions(questions)
-    domain_label = primary_domain.replace("_", " ").title()
-
-    message = f"""Great! I can see this is a **{domain_label}** project. 🎯
-
-Here's what I understand so far:
-_{understood}_
-
-To design the perfect database schema, I have a few questions:
-
-{questions_text}
-
-Feel free to answer all or just the ones relevant to your project.
-When you're ready to generate the blueprint, just say **"Generate Blueprint"**."""
-
-    return {
-        "message": message,
-        "stage": state.stage,
-        "detected_domain": primary_domain,
-        "all_domains": all_domains,
-        "clarification_round": 1,
-        "understanding_confidence": confidence_pct,
-        "session_id": state.session_id,
-    }
-
-
-def _handle_clarifying(state: ConversationState, user_message: str) -> dict:
-    """
-    Dynamic multi-round clarification.
-    
-    Each round:
-    1. Appends user's answer to the requirement summary
-    2. Asks AI to assess current understanding (confidence 0-100%)
-    3. If user explicitly says "generate" OR confidence >= 85%, proceed to blueprint
-    4. Otherwise, generate next targeted set of questions and loop back
-    """
-    msg_lower = user_message.lower().strip()
-
-    # ── Check if user wants to proceed ──────────────────────────
-    wants_to_proceed = any(signal in msg_lower for signal in GENERATE_BLUEPRINT_SIGNALS)
-
-    # Append the user's answer
-    if user_message.strip():
-        if state.clarifications_done == 0:
-            # First clarification round
-            state.requirement_summary += f"\n\nAdditional context:\n{user_message}"
-        else:
-            state.requirement_summary += f"\n\nRound {state.clarifications_done + 1} answers:\n{user_message}"
-
-    state.clarifications_done += 1
-
-    # Detect domain from accumulated requirement
-    primary_domain, _ = detect_domain(state.requirement_summary)
-
-    # ── Assess current understanding ─────────────────────────────
-    understanding = assess_understanding(state, primary_domain)
-    current_confidence = understanding.get("confidence", 50)
-    logger.info(f"🧠 Understanding confidence after round {state.clarifications_done}: {current_confidence}%")
-
-    # Update accumulated understanding
-    state.understood_aspects = understanding.get("understood", {})
-
-    # ── Decide: proceed or ask more questions ────────────────────
-    # The transition to the blueprint stage must be EXPLICITLY triggered by the user
-    # ("the bot should be asking more and more question... until the user verifies")
-    if wants_to_proceed:
-        logger.info(
-            f"✅ Proceeding to blueprint generation — "
-            f"confidence: {current_confidence}%, "
-            f"user triggered: {wants_to_proceed}, "
-            f"rounds done: {state.clarifications_done}"
-        )
-        return _generate_blueprint_from_understanding(state, primary_domain)
-
-    # ── Generate next round of questions ─────────────────────────
-    q_data = generate_dynamic_clarifying_questions(state, primary_domain)
-
-    questions = q_data.get("questions", [])
-    still_unclear = q_data.get("key_gaps", [])
-    new_confidence = q_data.get("confidence", current_confidence)
-
-    # Track questions
-    state.questions_asked.extend([q["question"] for q in questions])
-
-    questions_text = _format_questions(questions)
-    one_line = understanding.get("one_line_summary", "your project")
-    round_num = state.clarifications_done + 1
-
-    # Build a friendly, context-aware response
-    affirmations = [
-        "Thanks, that's helpful! 👍",
-        "Got it, that clarifies a lot!",
-        "Perfect, I'm getting a clearer picture!",
-        "Great context! 🙌",
-        "That helps me understand the scope better!",
-    ]
-    affirmation = affirmations[(state.clarifications_done - 1) % len(affirmations)]
-
-    confidence_bar = _confidence_bar(new_confidence)
-    gaps_text = ""
-    if still_unclear:
-        gaps_text = f"\n\n*Still figuring out: {', '.join(still_unclear[:3])}*"
-
-    # If confidence is very high, explicitly prompt that we are ready but wait for their go-ahead
-    if new_confidence >= 85:
-        ready_prompt = "\n\n💡 **I have a very clear understanding and am ready to design your blueprint!** Feel free to answer the questions above if you want to add more detail, or click **Generate Blueprint** to see the design."
-    else:
-        ready_prompt = "\n\nAnswer what you can — or click **Generate Blueprint** below when you feel I have understood your project well enough."
-
-    message = f"""{affirmation}
-
-**My understanding so far:** _{one_line}_
-{confidence_bar}{gaps_text}
-
-Here are my next questions (Round {round_num}):
-
-{questions_text}{ready_prompt}"""
-
-    return {
-        "message": message,
-        "stage": state.stage,
-        "clarification_round": round_num,
-        "understanding_confidence": new_confidence,
-        "session_id": state.session_id,
-    }
 
 
 def _compile_pipeline_blueprint(
@@ -555,57 +298,6 @@ def _compile_pipeline_blueprint(
     )
 
 
-def _generate_blueprint_from_understanding(state: ConversationState, primary_domain: str) -> dict:
-    """
-    Generate the blueprint using all accumulated context.
-    Called when either user triggers generation or AI confidence >= 85%.
-    """
-    full_requirement = state.requirement_summary
-
-    gst_required = any(w in full_requirement.lower()
-                       for w in ["gst", "invoice", "tax", "billing"])
-
-    scale = "medium"
-    req_lower = full_requirement.lower()
-    if any(w in req_lower for w in ["large", "million", "millions", "enterprise", "thousands", "billion"]):
-        scale = "large"
-    elif any(w in req_lower for w in ["small", "startup", "simple", "basic"]):
-        scale = "small"
-
-    blueprint = _compile_pipeline_blueprint(
-        state=state,
-        requirement=full_requirement,
-        domain=primary_domain,
-        gst_required=gst_required,
-        scale=scale,
-    )
-
-    state.blueprint = blueprint
-    state.stage = ConversationStage.BLUEPRINT
-
-    blueprint_text = _format_blueprint(state.blueprint)
-    total_tables = sum(len(m.get("tables", [])) for m in state.blueprint.modules)
-
-    message = f"""I believe I understand your project well now! Here's the **Database Blueprint** I've designed:
- 
-{blueprint_text}
- 
-**~{total_tables} tables** across **{len(state.blueprint.modules)} modules** — tailored specifically to your project.
- 
----
-**Does this match your vision?**
-- Type **YES** to confirm and generate the full SQL schema
-- Type **EDIT [what to change]** to adjust the blueprint
-- Type **ADD [module name]** to include an additional module"""
-
-    return {
-        "message": message,
-        "stage": state.stage,
-        "blueprint": _blueprint_to_dict(state.blueprint),
-        "session_id": state.session_id,
-    }
-
-
 def _handle_blueprint_confirmation(state: ConversationState, user_message: str) -> dict:
     """User confirms or edits the blueprint."""
     user_lower = user_message.lower().strip()
@@ -632,26 +324,10 @@ I will now generate:
         state.add_message("assistant", confirm_message)
         return _handle_generation(state)
 
-    # User wants to edit
+    # User wants to edit — recompile the blueprint as an async job
     elif user_lower.startswith(("edit", "add", "remove", "change", "update")):
         state.requirement_summary += f"\n\nUser edit request: {user_message}"
-        blueprint_response = _generate_blueprint(state, state.requirement_summary)
-        state.blueprint = blueprint_response["blueprint"]
-        blueprint_text = _format_blueprint(state.blueprint)
-
-        message = f"""I've updated the blueprint based on your feedback:
- 
-{blueprint_text}
- 
----
-Type **YES** to confirm, or let me know if you need more changes."""
-
-        return {
-            "message": message,
-            "stage": state.stage,
-            "blueprint": _blueprint_to_dict(state.blueprint),
-            "session_id": state.session_id,
-        }
+        return _blueprint_job_trigger(state)
 
     else:
         return {
@@ -665,6 +341,24 @@ Type **YES** to confirm, or let me know if you need more changes."""
             "stage": state.stage,
             "session_id": state.session_id,
         }
+
+
+def _blueprint_job_trigger(state: ConversationState) -> dict:
+    """
+    Signal the frontend to run the L1-L8 blueprint compile as an async job
+    (Phase 2 — this used to block the /message request for 30-60s). The
+    frontend submits POST /planner/generate with mode="blueprint" and polls;
+    the job writes the finished blueprint back into the session.
+    """
+    state.stage = ConversationStage.COMPILING
+    save_session(state)
+    return {
+        "session_id": state.session_id,
+        "stage": state.stage,
+        "message": "Designing your blueprint — this'll just take a moment.",
+        "requirement": state.requirement_summary,
+        "mode": "blueprint",
+    }
 
 
 def _handle_generation(state: ConversationState) -> dict:
@@ -681,31 +375,6 @@ def _handle_generation(state: ConversationState) -> dict:
         "requirement": generation_requirement,
         "blueprint": _blueprint_to_dict(state.blueprint) if state.blueprint else None,
     }
-
-
-def _generate_blueprint(state: ConversationState, requirement: str) -> dict:
-    """Use L1-L8 compilation pipeline to regenerate a structured blueprint from requirement."""
-    from app.engine.rule_matcher import detect_domain
-    primary_domain, _ = detect_domain(requirement)
-
-    gst_required = any(w in requirement.lower()
-                       for w in ["gst", "invoice", "tax", "billing"])
-
-    scale = "medium"
-    req_lower = requirement.lower()
-    if any(w in req_lower for w in ["large", "million", "millions", "enterprise", "thousands", "billion"]):
-        scale = "large"
-    elif any(w in req_lower for w in ["small", "startup", "simple", "basic"]):
-        scale = "small"
-
-    blueprint = _compile_pipeline_blueprint(
-        state=state,
-        requirement=requirement,
-        domain=primary_domain,
-        gst_required=gst_required,
-        scale=scale,
-    )
-    return {"blueprint": blueprint}
 
 
 def _fallback_blueprint(requirement: str, domain: str) -> dict:

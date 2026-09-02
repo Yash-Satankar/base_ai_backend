@@ -176,29 +176,12 @@ def handle_confirm_with_change(
 
     logger.info(f"✅ Confirm with change: {change_content}")
 
-    # Update requirement with the change
+    # Update requirement with the change, then recompile the blueprint as an
+    # async job (Phase 2 — the L1-L8 compile no longer blocks the request).
     state.requirement_summary += f"\n\nUser requested change after confirmation: {change_content}"
 
-    # Regenerate blueprint with the change included
-    from app.services.conversation_service import _generate_blueprint, _format_blueprint
-
-    blueprint_response = _generate_blueprint(state, state.requirement_summary)
-    state.blueprint = blueprint_response["blueprint"]
-
-    blueprint_text = _format_blueprint(state.blueprint)
-
-    return {
-        "message": f"""I've applied your change and updated the blueprint:
-
-{blueprint_text}
-
----
-Type **YES** to confirm this updated version, or let me know if you need more changes.""",
-        "stage": ConversationStage.BLUEPRINT,
-        "session_id": state.session_id,
-        "blueprint": _blueprint_to_dict_safe(state.blueprint),
-        "action": "blueprint_updated",
-    }
+    from app.services.conversation_service import _blueprint_job_trigger
+    return _blueprint_job_trigger(state)
 
 
 def handle_session_summary(state: ConversationState) -> dict:
