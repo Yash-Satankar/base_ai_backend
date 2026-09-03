@@ -17,6 +17,12 @@ _groq_client = None
 def get_groq_client() -> Groq:
     global _groq_client
     if _groq_client is None:
+        if not settings.GROQ_API_KEY:
+            raise HTTPException(
+                status_code=500,
+                detail="GROQ_API_KEY must be set in .env to use the Groq provider "
+                       "(or set AI_PROVIDER=ollama / anthropic).",
+            )
         _groq_client = Groq(
             api_key=settings.GROQ_API_KEY,
             max_retries=0
@@ -52,8 +58,17 @@ def generate_schema(
         return _generate_with_groq(system_prompt, user_prompt, max_tokens, model, temperature)
     elif provider == "anthropic":
         return _generate_with_anthropic(system_prompt, user_prompt, max_tokens, temperature)
+    elif provider == "ollama":
+        return _generate_with_ollama(system_prompt, user_prompt, max_tokens, model, temperature)
     else:
-        raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq' or 'anthropic'.")
+        raise ValueError(f"Unknown AI_PROVIDER: {provider}. Use 'groq', 'anthropic' or 'ollama'.")
+
+
+def _wants_json(system_prompt: str) -> bool:
+    """The L1-L8 compile and clarify prompts all say 'valid JSON'; the SQL
+    generator says 'Raw MySQL ... ONLY'. Use that to decide when to ask the
+    model for guaranteed-parseable JSON."""
+    return "valid json" in (system_prompt or "").lower()
 
 
 def _generate_with_groq(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None,
@@ -240,3 +255,81 @@ def _generate_with_anthropic(system_prompt: str, user_prompt: str, max_tokens: O
             status_code=502,
             detail=f"Anthropic API call failed: {str(e)[:150]}"
         )
+
+
+# ─── Ollama (local, OpenAI-free) ───────────────────────────────
+
+def _generate_with_ollama(system_prompt: str, user_prompt: str, max_tokens: Optional[int] = None,
+                          model: Optional[str] = None, temperature: Optional[float] = None) -> dict:
+    """Generate using a locally running Ollama server (no API key).
+
+    Uses the native /api/chat endpoint with stream=false. When the prompt asks
+    for JSON we set format="json" so Ollama constrains the output to a valid
+    JSON value — this is what stops the L1-L8 compile from crashing on prose.
+    """
+    import httpx
+
+    base = settings.OLLAMA_BASE_URL.rstrip("/")
+    model_to_use = model or settings.OLLAMA_MODEL
+    temp = 0.2 if temperature is None else temperature
+
+    options = {
+        "temperature": temp,
+        "num_ctx": settings.OLLAMA_NUM_CTX,
+    }
+    if max_tokens is not None:
+        options["num_predict"] = max_tokens
+
+    payload = {
+        "model": model_to_use,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "options": options,
+    }
+    if _wants_json(system_prompt):
+        payload["format"] = "json"
+
+    try:
+        resp = httpx.post(
+            f"{base}/api/chat",
+            json=payload,
+            timeout=settings.AI_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        body = e.response.text[:200] if e.response is not None else ""
+        logger.error(f"❌ Ollama HTTP {e.response.status_code}: {body}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama returned {e.response.status_code}. Is model '{model_to_use}' pulled? ({body})",
+        )
+    except Exception as e:
+        logger.error(f"❌ Ollama call failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama call failed ({settings.OLLAMA_BASE_URL}): {str(e)[:150]}. Is `ollama serve` running?",
+        )
+
+    content = (data.get("message") or {}).get("content", "") or ""
+    in_tokens = data.get("prompt_eval_count", 0)
+    out_tokens = data.get("eval_count", 0)
+
+    # Reasoning models (deepseek-r1, qwen3, …) emit <think>…</think>; drop it.
+    if content:
+        content = re.sub(r"<think>.*?(?:</think>|$)", "", content, flags=re.DOTALL).strip()
+
+    logger.info(f"✅ Ollama: {in_tokens} in / {out_tokens} out tokens (Model: {model_to_use})")
+
+    return {
+        "content": content,
+        "provider": "ollama",
+        "model": model_to_use,
+        "usage": {
+            "input_tokens": in_tokens,
+            "output_tokens": out_tokens,
+        },
+    }

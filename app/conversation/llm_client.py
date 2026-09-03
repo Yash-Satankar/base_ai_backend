@@ -219,7 +219,8 @@ def call_llm(
 
     used_model = resp.get("model", effective_model or settings.GROQ_MODEL)
     usage = resp.get("usage", {})
-    cost = _price(used_model, usage)
+    # Local inference (Ollama) is free — it must never trip the cost-degrade path.
+    cost = 0.0 if resp.get("provider") == "ollama" else _price(used_model, usage)
 
     total = _add_conversation_cost(session_id, cost)
     if session_id and total >= settings.CONVERSATION_COST_WARN_USD:

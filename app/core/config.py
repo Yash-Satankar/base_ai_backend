@@ -10,11 +10,16 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # AI Provider
-    AI_PROVIDER: str = "groq"
-    GROQ_API_KEY: str                          # no default — must be set in .env
+    AI_PROVIDER: str = "groq"                  # "groq" | "anthropic" | "ollama"
+    GROQ_API_KEY: Optional[str] = None         # required only when AI_PROVIDER=groq
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
+
+    # Ollama (local, no API key). Set AI_PROVIDER=ollama to use it.
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "llama3.1"
+    OLLAMA_NUM_CTX: int = 16384               # context window — must fit the big system prompts
 
     # Generation
     MAX_TOKENS: int = 12000
