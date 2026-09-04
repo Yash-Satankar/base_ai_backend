@@ -21,6 +21,12 @@ from app.schemas.blueprint_schema import BlueprintSpec, BlueprintModuleSpec, Blu
 logger = logging.getLogger(__name__)
 
 
+# L1-L8 compile outputs are JSON plans — a few thousand tokens even for a large
+# domain. Capping the request here (vs the 12000 default) keeps calls near
+# Groq's free-tier per-minute window without truncating real plans.
+_L_COMPILE_MAX_TOKENS = 6000
+
+
 def generate_schema(system_prompt: str, user_prompt: str, max_tokens: int = None) -> dict:
     """
     Local shim: every L1-L8 compile call goes through the tagged llm_client so
@@ -32,7 +38,7 @@ def generate_schema(system_prompt: str, user_prompt: str, max_tokens: int = None
         operation="blueprint_compile",
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        max_tokens=max_tokens,
+        max_tokens=max_tokens or _L_COMPILE_MAX_TOKENS,
     )
 
 

@@ -4,7 +4,7 @@
 
 BASE AI is an AI-powered backend that transforms natural language business requirements into deeply structured, validated MySQL database schemas — complete with a PDF explanation of every design decision.
 
-Built on **94 proprietary rules** across 23 categories, a **9-level validation pipeline**, and a conversational design session system that guides you from idea to schema.
+Built on **98 proprietary rules** across 24 categories, a **9-level validation pipeline**, and a conversational design session system that guides you from idea to schema.
 
 ---
 
@@ -18,7 +18,7 @@ BASE AI:
 1. Detects the domain and matches relevant rules from the rule engine
 2. Generates a **blueprint** (modules + tables) for you to review
 3. After your approval, generates the full **production-ready SQL schema**
-4. Validates the output against 94 rules and auto-fixes issues
+4. Validates the output against 98 rules and auto-fixes issues
 5. Returns a downloadable **SQL file + PDF documentation**
 
 ---
@@ -35,7 +35,7 @@ User Prompt
 └─────────────┬───────────────────────┘
               │
     ┌─────────▼──────────┐
-    │   Rule Matcher      │  ← Vector search on 94 rules (Qdrant)
+    │   Rule Matcher      │  ← Vector search on 98 rules (Qdrant)
     │   + Domain Detect   │
     └─────────┬───────────┘
               │
@@ -64,7 +64,7 @@ User Prompt
 | Layer | Technology |
 |---|---|
 | API Framework | FastAPI (Python 3.11) |
-| AI Provider | Groq (llama-3.3-70b) with multi-model fallback |
+| AI Provider | Groq (`openai/gpt-oss-120b`) with multi-model fallback; local Ollama supported |
 | Vector Search | Qdrant (rule retrieval) |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) |
 | Database | PostgreSQL (async via SQLAlchemy) |
@@ -78,17 +78,17 @@ User Prompt
 
 ## Rule Engine
 
-The schema generator is powered by **94 proprietary rules** across 23 categories:
+The schema generator is powered by **98 proprietary rules** across 24 categories:
 
 | Category | Rules | What it enforces |
 |---|---|---|
 | Architecture | 21 | 3-layer structure, module design |
+| Convention | 10 | Naming standards (`_all` suffix, prefixes) |
 | Workflow | 8 | State machines, lifecycle tables |
-| Convention | 9 | Naming standards (`_all` suffix, prefixes) |
 | Financial | 7 | GST, invoicing, amount precision |
-| Domain | 6 | Industry-specific patterns |
 | Constraints | 6 | Foreign keys, indexes, unique constraints |
-| + 17 more | 37 | Audit, security, performance, temporal... |
+| Domain | 6 | Industry-specific patterns |
+| + 18 more | 40 | Identity, audit, configuration, operations, monitoring, temporal, security… |
 
 ---
 
@@ -129,7 +129,7 @@ POST /auth/api-key                → Generate API key
 ```
 GET  /health                      → Health check
 GET  /ai/provider                 → Active AI provider info
-GET  /rules                       → Browse all 94 rules
+GET  /rules                       → Browse all 98 rules
 GET  /dashboard                   → Usage stats
 GET  /docs                        → Swagger UI (debug mode only)
 ```
@@ -170,7 +170,7 @@ cp .env.example .env
 python seed.py
 ```
 
-This embeds all 94 rules into Qdrant for vector search. Run once on setup.
+This embeds all 98 rules into Qdrant for vector search. Run once on setup.
 
 ### 4. Start the server
 
@@ -284,7 +284,7 @@ base_ai_backend/
 │   ├── db/                  # Database, vector store, session store
 │   ├── engine/              # Architecture planner, rule matcher, conversation engine
 │   ├── prompts/             # System prompts (27KB of carefully crafted instructions)
-│   ├── rules/               # rules.json (94 rules)
+│   ├── rules/               # rules.json (98 rules)
 │   ├── schemas/             # Pydantic request/response models
 │   ├── services/            # Business logic layer
 │   └── validators/          # Schema validation engine

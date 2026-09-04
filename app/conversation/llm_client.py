@@ -29,12 +29,17 @@ from app.db.session_store import get_redis_client, mark_redis_down
 logger = logging.getLogger(__name__)
 
 # ── Per-model rates ($ per 1M tokens: input, output) ──────────────
+# gpt-oss rates are Together AI's published serverless pricing
+# (together.ai/pricing, verified Sep 2026): gpt-oss-120b $0.15/$0.60,
+# gpt-oss-20b $0.05/$0.20. llama-3.x kept for historical telemetry rows.
 _MODEL_RATES = {
+    "openai/gpt-oss-120b":     (0.15, 0.60),
+    "openai/gpt-oss-20b":      (0.05, 0.20),
+    "qwen/qwen3.8-27b":        (0.29, 0.39),
+    "qwen/qwen3.6-27b":        (0.29, 0.39),
     "llama-3.3-70b-versatile": (0.59, 0.79),
     "llama-3.1-8b-instant":    (0.05, 0.08),
-    "qwen/qwen3.6-27b":        (0.29, 0.39),
-    "openai/gpt-oss-120b":     (0.59, 0.79),
-    "_default":                (0.59, 0.79),
+    "_default":                (0.15, 0.60),
 }
 
 _COST_TTL = settings.REDIS_SESSION_TTL

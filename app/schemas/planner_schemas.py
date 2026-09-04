@@ -27,6 +27,11 @@ class ValidationResponse(BaseModel):
     scores_breakdown: dict
     tables_found: list[str]
     issues: list[ValidationIssueResponse]
+    # Optional MySQL execution-validation gate. None unless
+    # MYSQL_EXEC_VALIDATION_ENABLED. `execution` is a serialised ExecutionResult;
+    # `combined` folds the structural score + gate outcome into one verdict.
+    execution: Optional[dict] = None
+    combined: Optional[dict] = None
 
 
 # ── Request models ───────────────────────────────────────────────

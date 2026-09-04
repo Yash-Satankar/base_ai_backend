@@ -18,6 +18,25 @@ jobs:
       DATABASE_URL: "postgresql+asyncpg://user:pass@localhost:5432/testdb"
       REDIS_URL: "redis://localhost:6379/0"
       MASTER_API_KEY: "ci-master-key"
+      # Real MySQL 8 for the execution-validation gate. The DSN has no
+      # database, so the validator creates + drops an isolated scratch schema
+      # per run. REQUIRE_MYSQL_EXEC_TESTS=1 turns "no backend" from a skip into
+      # a failure — these tests are enforced on every push, not opt-in.
+      MYSQL_EXEC_VALIDATION_DSN: "mysql://root:test@127.0.0.1:3306/"
+      REQUIRE_MYSQL_EXEC_TESTS: "1"
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptest --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
 
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +51,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -ptest --silent; then
+              echo "MySQL is up"; exit 0
+            fi
+            echo "waiting for MySQL ($i)…"; sleep 2
+          done
+          echo "MySQL did not become ready"; exit 1
+
       - name: Run tests
         # No test contacts a real Redis/Postgres/Qdrant/Groq — external
-        # calls are monkeypatched or their dependencies overridden.
+        # calls are monkeypatched or their dependencies overridden. MySQL is
+        # real (the execution-validation gate needs it).
         run: pytest -v

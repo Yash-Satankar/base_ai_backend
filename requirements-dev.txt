@@ -4,3 +4,8 @@
 pytest
 pytest-asyncio
 aiosqlite          # in-memory async DB for the durable-memory tests
+
+# MySQL execution-validation gate tests. These spin up a real MySQL 8 via
+# an ephemeral Docker container; the tests skip cleanly when Docker is not
+# available (or when MYSQL_EXEC_VALIDATION_DSN points at an existing server).
+testcontainers[mysql]

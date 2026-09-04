@@ -20,7 +20,9 @@ from app.services.planner_helpers import (
     batch_tables,
     stitch_modules,
     clean_sql,
-    run_fix_pass
+    run_fix_pass,
+    run_execution_gate,
+    fold_execution_into_grade,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,18 @@ logger = logging.getLogger(__name__)
 # llama-3.3-70b caps at 8192 output tokens ≈ 4 deep tables.
 # Keeping this at 4 prevents truncation mid-CREATE-TABLE.
 MAX_TABLES_PER_BATCH = 4
+
+# A generation batch is retried this many times (with linear back-off) before it
+# is written off as a failed batch. A batch that raises OR that returns no
+# CREATE TABLE at all (truncated / garbage response) both count as failures.
+_BATCH_RETRY_ATTEMPTS = 2
+_BATCH_RETRY_BACKOFF_SEC = 2.0
+
+
+class SchemaIncompleteError(RuntimeError):
+    """Raised by the async job when, after per-batch retries, too few of the
+    planned tables were generated (< SCHEMA_COMPLETENESS_MIN_RATIO). The job is
+    failed rather than returning a structurally-clean fragment."""
 
 
 def generate_database_schema(
@@ -268,6 +282,15 @@ def generate_database_schema(
             combined_sql, validation, system_prompt
         )
 
+    # ── Step 6b: MySQL execution-validation gate (optional) ──────
+    # Runs the DDL against a real MySQL 8. No-op unless
+    # MYSQL_EXEC_VALIDATION_ENABLED. Feeds the combined grade only —
+    # the structural score is left as-is.
+    execution = run_execution_gate(combined_sql)
+    combined_verdict = fold_execution_into_grade(validation.score, execution)
+    if execution and not execution.get("skipped"):
+        logger.info(f"🐬 Execution gate: {execution.get('summary', '')}")
+
     elapsed = round(time.time() - start_time, 2)
 
     # ── Build generation summary ──────────────────────────────────
@@ -383,6 +406,9 @@ def generate_database_schema(
                 }
                 for i in validation.issues
             ],
+            # Optional MySQL execution-validation gate (None unless enabled).
+            "execution": execution,
+            "combined":  combined_verdict,
         },
     }
 
@@ -626,34 +652,56 @@ def generate_database_schema_for_job(
                 if extra_guidelines:
                     module_prompt += f"\n\nREUSABLE COMPONENT SQL SPECIFICATIONS:\n{extra_guidelines}"
 
-                try:
-                    response = generate_schema(
-                        system_prompt=system_prompt,
-                        user_prompt=module_prompt,
-                        max_tokens=2000,
-                    )
-                    batch_sql = response["content"]
-                    usage = response.get("usage", {})
-                    total_input_tokens  += usage.get("input_tokens", 0)
-                    total_output_tokens += usage.get("output_tokens", 0)
+                # Retry a batch that raises OR returns no CREATE TABLE at all
+                # (truncated / garbage response) before writing it off. Same
+                # shape as the Together provider retry added this phase.
+                batch_ok = False
+                last_err = None
+                for _attempt in range(_BATCH_RETRY_ATTEMPTS + 1):
+                    try:
+                        response = generate_schema(
+                            system_prompt=system_prompt,
+                            user_prompt=module_prompt,
+                            max_tokens=2000,
+                        )
+                        batch_sql = response["content"]
+                        usage = response.get("usage", {})
 
-                    new_tables = re.findall(
-                        r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
-                        batch_sql, re.IGNORECASE
-                    )
-                    generated_tables.extend(new_tables)
-                    module_new_tables.extend(new_tables)
-                    module_sql_parts.append(_clean_sql(batch_sql))
-                    tables_done += len(new_tables)
+                        new_tables = re.findall(
+                            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
+                            batch_sql, re.IGNORECASE
+                        )
+                        if not new_tables:
+                            raise ValueError("batch response contained no CREATE TABLE")
 
-                    logger.info(
-                        f"[job:{job_id[:8]}]   Batch {b_idx+1}: "
-                        f"{len(new_tables)} tables ({usage.get('output_tokens',0)} out tokens)"
-                    )
+                        total_input_tokens  += usage.get("input_tokens", 0)
+                        total_output_tokens += usage.get("output_tokens", 0)
+                        generated_tables.extend(new_tables)
+                        module_new_tables.extend(new_tables)
+                        module_sql_parts.append(clean_sql(batch_sql))
+                        tables_done += len(new_tables)
+                        batch_ok = True
+                        logger.info(
+                            f"[job:{job_id[:8]}]   Batch {b_idx+1}: "
+                            f"{len(new_tables)} tables ({usage.get('output_tokens',0)} out tokens)"
+                            + (f" [attempt {_attempt+1}]" if _attempt else "")
+                        )
+                        break
+                    except Exception as e:
+                        last_err = e
+                        if _attempt < _BATCH_RETRY_ATTEMPTS:
+                            wait = _BATCH_RETRY_BACKOFF_SEC * (_attempt + 1)
+                            logger.warning(
+                                f"[job:{job_id[:8]}]   Batch {b_idx+1} attempt {_attempt+1} "
+                                f"failed ({str(e)[:120]}) — retrying in {wait:.0f}s"
+                            )
+                            import time as _time
+                            _time.sleep(wait)
 
-                except Exception as e:
+                if not batch_ok:
                     logger.error(
-                        f"[job:{job_id[:8]}]   Batch {b_idx+1} failed: {e}"
+                        f"[job:{job_id[:8]}]   Batch {b_idx+1} failed after "
+                        f"{_BATCH_RETRY_ATTEMPTS + 1} attempts: {last_err}"
                     )
                     module_failed_batches.append(b_idx + 1)
 
@@ -696,6 +744,29 @@ def generate_database_schema_for_job(
                 tables_done=tables_done,
             )
 
+        # ── Step 3b: Completeness gate ───────────────────────────
+        # After per-batch retries, if too few of the planned tables actually
+        # made it, FAIL the job here — before stitch, validation, run_fix_pass
+        # and the refiner ever see the fragment. A structurally-clean partial
+        # schema must never be handed back as finished.
+        generated_distinct = len({t.lower() for t in generated_tables})
+        completeness_ratio = (
+            generated_distinct / tables_planned if tables_planned > 0 else 1.0
+        )
+        logger.info(
+            f"[job:{job_id[:8]}] Completeness: {generated_distinct}/{tables_planned} "
+            f"tables ({completeness_ratio:.0%}); "
+            f"min ratio {settings.SCHEMA_COMPLETENESS_MIN_RATIO:.0%}"
+        )
+        if completeness_ratio < settings.SCHEMA_COMPLETENESS_MIN_RATIO:
+            raise SchemaIncompleteError(
+                f"schema incomplete: generated {generated_distinct}/{tables_planned} "
+                f"planned tables ({completeness_ratio:.0%}), below the "
+                f"{settings.SCHEMA_COMPLETENESS_MIN_RATIO:.0%} completeness gate. "
+                f"Failed modules: "
+                + (", ".join(f['module'] for f in failed_modules) or "none")
+            )
+
         # ── Step 4: Stitch & validate ────────────────────────────
         combined_sql = stitch_modules(all_sql_parts, project_name)
         validator    = SchemaValidator()
@@ -706,6 +777,68 @@ def generate_database_schema_for_job(
             combined_sql, validation = run_fix_pass(
                 combined_sql, validation, system_prompt
             )
+
+        # ── Step 4b: Auto-iteration refinement (explicit stage) ──
+        # Loops schema_validator + mysql_execution_validator and feeds the
+        # concrete findings back to the LLM. No-op unless SCHEMA_REFINE_ENABLED.
+        refinement_report = None
+        refinement = None
+        if settings.SCHEMA_REFINE_ENABLED:
+            from app.services.schema_refiner import refine_until_clean
+            refinement = refine_until_clean(
+                combined_sql,
+                {
+                    "requirement":   requirement,
+                    "system_prompt": system_prompt,
+                    "session_id":    session_id,
+                    "project_id":    None,
+                },
+                max_iterations=settings.SCHEMA_REFINE_MAX_ITERATIONS,
+            )
+            combined_sql = refinement.final_ddl
+            validation = validator.validate(combined_sql)   # reflect refined DDL
+            total_tables = len(validation.tables_found)
+
+            # ── Step 4b-gate: post-refinement completeness ──────────
+            # The refiner does whole-schema rewrites; a large schema can exceed
+            # the response budget and come back with tables dropped. Re-apply
+            # the completeness gate to the REFINED output so a shrunk schema
+            # fails the job instead of shipping as "converged".
+            post_ratio = (total_tables / tables_planned) if tables_planned > 0 else 1.0
+            logger.info(
+                f"[job:{job_id[:8]}] Post-refine completeness: {total_tables}/{tables_planned} "
+                f"({post_ratio:.0%})"
+            )
+            if post_ratio < settings.SCHEMA_COMPLETENESS_MIN_RATIO:
+                raise SchemaIncompleteError(
+                    f"schema incomplete after refinement: {total_tables}/{tables_planned} "
+                    f"tables ({post_ratio:.0%}), below the "
+                    f"{settings.SCHEMA_COMPLETENESS_MIN_RATIO:.0%} completeness gate "
+                    f"(refiner dropped tables during a whole-schema rewrite)."
+                )
+            completeness_ratio = post_ratio
+
+            refinement_report = {
+                "iterations_used":  refinement.iterations_used,
+                "converged":        refinement.converged,
+                "degraded":         refinement.degraded,
+                "total_cost_usd":   refinement.total_cost_usd,
+                "remaining_issues": refinement.remaining_issues,
+                "history":          refinement.history,
+                "summary":          refinement.summary(),
+            }
+            logger.info(f"[job:{job_id[:8]}] 🔁 {refinement.summary()}")
+
+        # ── Step 4c: MySQL execution-validation gate ─────────────
+        # Reuse the refiner's final MySQL run when it ran, so we don't spin up
+        # a second server for the same DDL.
+        if refinement is not None and refinement.final_execution is not None:
+            execution = refinement.final_execution
+        else:
+            execution = run_execution_gate(combined_sql)
+        combined_verdict = fold_execution_into_grade(validation.score, execution)
+        if execution and not execution.get("skipped"):
+            logger.info(f"[job:{job_id[:8]}] 🐬 Execution gate: {execution.get('summary', '')}")
 
         # ── Step 5: Generate Traceability Graph ──────────────────
         traceability_graph = {}
@@ -797,7 +930,12 @@ def generate_database_schema_for_job(
                 "tables_planned":        tables_planned,
                 "tables_generated":      tables_generated,
                 "completeness_pct":      completeness_pct,
-                "is_complete":           len(failed_modules) == 0,
+                # ratio measured at the completeness gate (distinct generated /
+                # planned); the job only reaches here if it passed the gate.
+                "completeness_ratio":    round(completeness_ratio, 4),
+                "completeness_min_ratio": settings.SCHEMA_COMPLETENESS_MIN_RATIO,
+                "is_complete":           len(failed_modules) == 0
+                                         and completeness_ratio >= settings.SCHEMA_COMPLETENESS_MIN_RATIO,
             },
             "validation": {
                 "score":    validation.score,
@@ -826,6 +964,12 @@ def generate_database_schema_for_job(
                     }
                     for i in validation.issues
                 ],
+                # Optional MySQL execution-validation gate (None unless enabled).
+                "execution": execution,
+                "combined":  combined_verdict,
+                # Auto-iteration refinement stage (None unless SCHEMA_REFINE_ENABLED).
+                # Debug-view only — stripped from the lean response by _lean_job_result.
+                "refinement": refinement_report,
             },
         }
 

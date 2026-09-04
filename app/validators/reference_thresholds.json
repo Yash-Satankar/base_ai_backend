@@ -1,0 +1,113 @@
+{
+  "generated": "2026-09-04",
+  "source": "Databases/ real production dumps",
+  "dumps_analysed": 34,
+  "dump_files": [
+    "kaptify_dev.sql",
+    "tfyjqkpt_centraldb.sql",
+    "tfyjqkpt_claim.sql",
+    "tfyjqkpt_edu3dbharat.sql",
+    "tfyjqkpt_geeta_db.sql",
+    "tfyjqkpt_individual.sql",
+    "tfyjqkpt_individual_app.sql",
+    "tfyjqkpt_inout.sql",
+    "tfyjqkpt_integrated.sql",
+    "tfyjqkpt_kaizen.sql",
+    "tfyjqkpt_kaptify.sql",
+    "tfyjqkpt_loan.sql",
+    "tfyjqkpt_loan_ds.sql",
+    "tfyjqkpt_mind_u.sql",
+    "tfyjqkpt_mpm.sql",
+    "tfyjqkpt_mpm_purchase.sql",
+    "tfyjqkpt_pms.sql",
+    "tfyjqkpt_premisafe.sql",
+    "tfyjqkpt_sagancy_new.sql",
+    "tfyjqkpt_sagencymonarch.sql",
+    "tfyjqkpt_security.sql",
+    "tfyjqkpt_ship_management.sql",
+    "tfyjqkpt_sitebuddy.sql",
+    "tfyjqkpt_smartwatch.sql",
+    "tfyjqkpt_test_webroker.sql",
+    "tfyjqkpt_tpsmartwatch.sql",
+    "tfyjqkpt_vhss.sql",
+    "tfyjqkpt_vocomonarch.sql",
+    "tfyjqkpt_vocoxp.sql",
+    "tfyjqkpt_vocoxp3_0.sql",
+    "tfyjqkpt_vocoxplive.sql",
+    "tfyjqkpt_warehouse.sql",
+    "tfyjqkpt_webroker.sql",
+    "tfyjqkpt_yuva-db.sql"
+  ],
+  "tables_total": 1830,
+  "foreign_keys": {
+    "dumps_declaring_any_fk": 9,
+    "dumps_declaring_any_fk_pct": 26.5,
+    "fk_constraints_total": 127,
+    "with_explicit_on_delete": 61,
+    "with_explicit_on_delete_pct": 48.0,
+    "with_explicit_on_update": 19,
+    "with_explicit_on_update_pct": 15.0,
+    "on_delete_action_distribution": {
+      "CASCADE": 60,
+      "SET NULL": 1
+    },
+    "on_update_action_distribution": {
+      "CASCADE": 19
+    }
+  },
+  "indexes": {
+    "secondary_index_per_table_mean": 0.33,
+    "secondary_index_per_table_median": 0.0,
+    "tables_with_multiple_fks": 33,
+    "multi_fk_tables_with_index_per_fk": 33,
+    "multi_fk_tables_with_index_per_fk_pct": 100.0
+  },
+  "engine": {
+    "distribution": {
+      "innodb": 1773,
+      "unspecified": 17,
+      "myisam": 40
+    },
+    "innodb_pct": 96.9
+  },
+  "charset": {
+    "distribution": {
+      "latin1": 808,
+      "utf8mb4": 633,
+      "unspecified": 17,
+      "utf8mb3": 372
+    },
+    "utf8mb4_pct": 34.6,
+    "legacy_latin1_or_utf8mb3": 1180,
+    "dumps_with_mixed_charset": 27,
+    "dumps_with_mixed_charset_pct": 79.4
+  },
+  "timestamps": {
+    "base_tables": 1825,
+    "probable_junction_tables": 5,
+    "base_tables_with_both_created_and_updated": 313,
+    "base_tables_with_both_pct": 17.2,
+    "base_tables_with_any_timestamp_pct": 32.7,
+    "junction_tables_with_any_timestamp": 4,
+    "junction_tables_with_any_timestamp_pct": 80.0,
+    "dominant_created_column": "created_on",
+    "dominant_updated_column": "modified_on"
+  },
+  "derived_thresholds": {
+    "fk_referential_action_expected": true,
+    "fk_referential_action_observed_rate_pct": 48.0,
+    "fk_referential_action_rationale": "Only 48.0% of the 127 real FK constraints spell out ON DELETE and 15.0% spell out ON UPDATE; the rest inherit MySQL's silent RESTRICT. That is the gap this check closes \u2014 an FK left at implicit RESTRICT is flagged so the author consciously picks CASCADE / SET NULL / RESTRICT.",
+    "most_common_explicit_on_delete": "CASCADE",
+    "multi_fk_secondary_index_expected": true,
+    "multi_fk_secondary_index_observed_cover_rate_pct": 100.0,
+    "innodb_required": true,
+    "innodb_observed_pct": 96.9,
+    "charset_target": "utf8mb4",
+    "charset_consistency_expected": true,
+    "charset_mixed_in_real_dumps_pct": 79.4,
+    "timestamps_required_on_base_tables": true,
+    "timestamps_base_table_coverage_pct": 32.7,
+    "timestamps_exempt_pure_junction": true,
+    "junction_timestamp_rate_pct": 80.0
+  }
+}

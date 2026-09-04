@@ -53,6 +53,17 @@ def _lean_job_result(result: dict) -> dict:
         lean["validation"] = {
             k: v[k] for k in ("score", "passed", "grade", "summary") if k in v
         }
+        # Headline verdict from the optional MySQL execution gate, if it ran.
+        if isinstance(v.get("combined"), dict):
+            lean["validation"]["combined"] = v["combined"]
+        ex = v.get("execution")
+        if isinstance(ex, dict):
+            lean["validation"]["execution"] = {
+                k: ex[k] for k in (
+                    "success", "skipped", "summary",
+                    "error_issue_count", "advisory_issue_count",
+                ) if k in ex
+            }
 
     return lean
 

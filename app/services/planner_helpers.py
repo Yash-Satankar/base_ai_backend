@@ -7,9 +7,82 @@ to keep the main planner service clean and modular.
 import re
 import logging
 from datetime import datetime
+from typing import Optional
 from app.services.ai_service import generate_schema
 
 logger = logging.getLogger(__name__)
+
+
+def _grade(score: int) -> str:
+    return (
+        "A" if score >= 90 else
+        "B" if score >= 80 else
+        "C" if score >= 70 else
+        "D" if score >= 60 else "F"
+    )
+
+
+def run_execution_gate(sql: str) -> Optional[dict]:
+    """Optional MySQL *execution* validation gate — runs AFTER SchemaValidator.
+
+    Returns a serialised ``ExecutionResult`` dict, or ``None`` when the feature
+    flag is off. Never raises: a backend that is unavailable comes back as
+    ``{"skipped": true, ...}`` and a module-level error is caught here.
+    """
+    from app.core.config import settings
+    if not settings.MYSQL_EXEC_VALIDATION_ENABLED:
+        return None
+    try:
+        from app.services.mysql_execution_validator import execute_and_validate
+        result = execute_and_validate(sql)
+        return result.to_dict()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.error(f"Execution-validation gate errored (non-fatal): {e}", exc_info=True)
+        return {
+            "skipped": True,
+            "skip_reason": f"gate raised: {e}",
+            "success": False,
+            "executed": False,
+            "summary": f"⏭  MySQL execution validation errored — {e}",
+        }
+
+
+def fold_execution_into_grade(structural_score: int, execution: Optional[dict]) -> dict:
+    """Combine the structural score (0-100) with the execution-gate outcome into
+    one headline verdict.
+
+    The structural score is left untouched. The gate can only *lower* the
+    combined verdict — a schema MySQL refuses to create is not production-ready
+    however clean its text scores. Advisory findings nudge; errors fail it.
+    """
+    passed = structural_score >= 80
+    combined = structural_score
+    notes: list[str] = []
+
+    ran = bool(execution and not execution.get("skipped"))
+    if ran:
+        ddl_errors = execution.get("ddl_errors", []) or []
+        err = execution.get("error_issue_count", 0)
+        adv = execution.get("advisory_issue_count", 0)
+        if not execution.get("success"):
+            passed = False
+            combined = min(combined, 55)
+            notes.append(f"{len(ddl_errors)} MySQL engine error(s)")
+        if err:
+            passed = False
+        combined = max(0, combined - 10 * err - 2 * adv)
+        if err or adv:
+            notes.append(f"{err} enterprise error(s), {adv} advisory")
+    elif execution and execution.get("skipped"):
+        notes.append("execution gate skipped (no MySQL backend)")
+
+    return {
+        "combined_score": combined,
+        "combined_grade": _grade(combined),
+        "combined_passed": passed,
+        "execution_ran": ran,
+        "notes": notes,
+    }
 
 
 def batch_tables(tables: list[dict], batch_size: int) -> list[list[dict]]:

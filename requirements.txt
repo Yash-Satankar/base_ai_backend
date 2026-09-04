@@ -20,6 +20,8 @@ sqlparse
 python-multipart
 reportlab
 langdetect
+# MySQL execution-validation gate (only used when MYSQL_EXEC_VALIDATION_ENABLED=True)
+pymysql
 # Auth
 pyjwt
 bcrypt

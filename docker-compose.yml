@@ -57,7 +57,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
       - JWT_SECRET=${JWT_SECRET}
       - MASTER_API_KEY=${MASTER_API_KEY:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost}
@@ -80,6 +80,32 @@ services:
       - "80:80"
     depends_on:
       - backend
+
+  # ── Ephemeral MySQL 8 used ONLY by the execution-validation gate ──
+  # Not part of the default stack — start it explicitly:
+  #   docker compose --profile validation up -d mysql-test
+  # then point the backend at it:
+  #   MYSQL_EXEC_VALIDATION_ENABLED=True
+  #   MYSQL_EXEC_VALIDATION_DSN=mysql://root:test@localhost:3310/
+  # Data lives in tmpfs — every restart is a clean server.
+  mysql-test:
+    image: mysql:8.0
+    container_name: base_ai_mysql_test
+    profiles: ["validation"]
+    command: >
+      --sql-mode=STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION,ERROR_FOR_DIVISION_BY_ZERO
+      --skip-mysqlx
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+    ports:
+      - "3310:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -ptest --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   postgres_data:
