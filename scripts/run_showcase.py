@@ -241,6 +241,10 @@ async def run_one(b: dict) -> dict:
     )
     job = _job_result(store, sch_job)
     result = job["result"]
+    # generate_database_schema_for_job writes sql_file_path/pdf_file_path onto
+    # the PERSISTED session as its last step — the `state` fetched at line 229
+    # (before the job ran) is now stale and will never see them. Re-fetch.
+    state = get_session(sid)
 
     v = result["validation"]
     execu = v.get("execution") or {}
@@ -299,6 +303,11 @@ async def run_one(b: dict) -> dict:
         reasons.append(f"advisories {adv} >= threshold {adv_threshold} (at/above)")
     if completeness_ratio is not None and completeness_ratio < min_ratio:
         reasons.append(f"completeness {completeness_ratio:.0%} < {min_ratio:.0%}")
+    if gen_sum.get("is_complete") is False:
+        # A high table-count ratio can mask a permanently-failed module if
+        # other modules over-delivered — is_complete also requires zero
+        # failed_modules, which the ratio alone doesn't catch.
+        reasons.append("generation job reported incomplete (a module failed)")
     if blocking > 0:
         reasons.append(f"{blocking} structural blocking issue(s)")
     if score < 90:

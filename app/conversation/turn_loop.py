@@ -16,16 +16,43 @@ VERIFY (leak/structure guard) stays in `process_message._finalize`.
 import asyncio
 import hashlib
 import logging
+import re
 
 from app.engine.conversation_engine import ConversationStage, run_clarify_turn
 from app.engine.intent_detector import detect_intent, IntentType
+from app.engine.decomposition_signals import detect_decomposition_signal
 from app.conversation import context_builder, llm_client
 from app.prompts import persona
 from app.guardrails.input_gate import Category
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 _META_WORDS = {"status", "where are we", "what's happening", "whats happening", "progress", "summary"}
+
+# ── Schema decomposition confirmation (docs/enterprise_standards_spec.md §2.2) ──
+_DECOMPOSE_STRONG_YES = re.compile(r"\bseparate\s+schemas?\b|\bsplit\b|\bmultiple\s+schemas?\b", re.IGNORECASE)
+_DECOMPOSE_STRONG_NO = re.compile(r"\bunified\b|\bone\s+schema\b|\bsingle\s+schema\b", re.IGNORECASE)
+
+
+def _parse_decomposition_answer(msg_lower: str) -> bool:
+    """Defaults to False (single schema) on an ambiguous or empty answer —
+    the conservative choice: no source supports decomposing without a clear
+    signal, so an unclear reply must not silently trigger it."""
+    if _DECOMPOSE_STRONG_YES.search(msg_lower):
+        return True
+    if _DECOMPOSE_STRONG_NO.search(msg_lower):
+        return False
+    return bool(re.search(r"\byes\b", msg_lower))
+
+
+_DECOMPOSITION_QUESTION = (
+    "One thing before I put the blueprint together: this sounds like it might "
+    "span more than one independent business domain.\n\n"
+    "Would you like me to design it as **separate schemas** (one per domain — "
+    "useful if different teams will own them independently), or as **one "
+    "unified schema**? Reply with either option."
+)
 
 
 def _h(text: str) -> str:
@@ -211,6 +238,15 @@ async def _think_clarifying(state, user_message, domain, assessment) -> dict:
     import app.services.conversation_service as cs
 
     msg_lower = user_message.lower().strip()
+
+    # A pending decomposition confirmation (asked last turn) takes priority
+    # over everything else this turn — the user was asked a direct question.
+    if (settings.SCHEMA_DECOMPOSITION_ENABLED and state.decomposition_question_asked
+            and state.decomposition_requested is None):
+        state.decomposition_requested = _parse_decomposition_answer(msg_lower)
+        logger.info(f"🧩 Decomposition confirmed: {state.decomposition_requested}")
+        return cs._blueprint_job_trigger(state)
+
     wants_to_proceed = any(sig in msg_lower for sig in cs.GENERATE_BLUEPRINT_SIGNALS)
 
     if user_message.strip():
@@ -219,6 +255,18 @@ async def _think_clarifying(state, user_message, domain, assessment) -> dict:
     state.clarifications_done += 1
 
     if wants_to_proceed:
+        # Ask, at most once, before compiling — never decide silently. Off
+        # unless SCHEMA_DECOMPOSITION_ENABLED (default False): every existing
+        # deployment and test keeps today's single-schema behavior untouched.
+        if (settings.SCHEMA_DECOMPOSITION_ENABLED and not state.decomposition_question_asked
+                and detect_decomposition_signal(state.requirement_summary)):
+            state.decomposition_question_asked = True
+            logger.info("🧩 Decomposition signal detected — asking for confirmation")
+            return {
+                "message": _DECOMPOSITION_QUESTION,
+                "stage": state.stage,
+                "session_id": state.session_id,
+            }
         logger.info(f"✅ User triggered blueprint after {state.clarifications_done} rounds")
         return cs._blueprint_job_trigger(state)
 

@@ -253,6 +253,17 @@ class ModuleItem(BaseModel):
         default_factory=list,
         description="List of other L7 module names that this module depends on."
     )
+    dependency_coupling: dict[str, Literal["tight", "loose"]] = Field(
+        default_factory=dict,
+        description=(
+            "Only populated when schema decomposition is under consideration. "
+            "For each name in `dependencies`, whether the relationship is "
+            "'tight' (a required, transactionally-consistent dependency that "
+            "must stay in the same schema) or 'loose' (an eventually-consistent "
+            "reference eligible to become a separate schema boundary) — see "
+            "docs/enterprise_standards_spec.md §2.2."
+        ),
+    )
 
 
 class L7_ModuleSpec(BaseModel):

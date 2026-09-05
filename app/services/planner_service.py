@@ -11,7 +11,7 @@ from app.prompts.system_prompt import (
     build_stitch_prompt,
 )
 from app.services.ai_service import generate_schema
-from app.validators.schema_validator import SchemaValidator
+from app.validators.schema_validator import SchemaValidator, is_high_criticality_domain
 from app.core.config import settings
 from app.services.file_service import generate_sql_file, generate_pdf_documentation
 from app.db.session_store import save_session, load_session
@@ -46,6 +46,19 @@ class SchemaIncompleteError(RuntimeError):
     failed rather than returning a structurally-clean fragment."""
 
 
+def _batch_well_formed(batch_sql: str) -> bool:
+    """Every ``CREATE TABLE`` in a generation batch must be a complete statement
+    — balanced parentheses and a terminating ``;``. A truncated last table
+    (the model hit the token ceiling) is caught here so the batch is retried."""
+    from app.services.schema_refiner import _iter_table_blocks, _balanced
+    seen = False
+    for _name, _a, _b, block in _iter_table_blocks(batch_sql):
+        seen = True
+        if not _balanced(block) or not block.rstrip().endswith(";"):
+            return False
+    return seen
+
+
 def generate_database_schema(
     requirement: str,
     blueprint: dict = None,
@@ -65,6 +78,15 @@ def generate_database_schema(
     match_result = match_rules(requirement)
     rules = match_result["rules"]
     primary_domain = match_result["primary_domain"]
+
+    # Gates the schema_validator archive/lifecycle-companion nudge (rule 3/4)
+    # — see docs/enterprise_standards_spec.md §2.5. Uses whichever domain
+    # signal is available: the blueprint's own classification first, falling
+    # back to the rule-matcher's primary_domain.
+    high_criticality = is_high_criticality_domain(
+        (blueprint or {}).get("domain") or primary_domain,
+        gst_required=(blueprint or {}).get("gst_required", False),
+    )
 
     system_prompt = build_system_prompt(rules)
 
@@ -266,7 +288,7 @@ def generate_database_schema(
 
     # ── Step 5: Validate combined schema ─────────────────────────
     validator = SchemaValidator()
-    validation = validator.validate(combined_sql)
+    validation = validator.validate(combined_sql, high_criticality=high_criticality)
     total_tables = len(validation.tables_found)
 
     logger.info(
@@ -279,7 +301,7 @@ def generate_database_schema(
     if validation.score < 80 and validation.issues:
         logger.info("🔧 Running targeted auto-fix pass...")
         combined_sql, validation = run_fix_pass(
-            combined_sql, validation, system_prompt
+            combined_sql, validation, system_prompt, high_criticality=high_criticality
         )
 
     # ── Step 6b: MySQL execution-validation gate (optional) ──────
@@ -513,6 +535,12 @@ def generate_database_schema_for_job(
         match_result = match_rules(requirement)
         rules = match_result["rules"]
         primary_domain = match_result["primary_domain"]
+        # Gates the schema_validator archive/lifecycle-companion nudge (rule
+        # 3/4) — see docs/enterprise_standards_spec.md §2.5.
+        high_criticality = is_high_criticality_domain(
+            (blueprint or {}).get("domain") or primary_domain,
+            gst_required=(blueprint or {}).get("gst_required", False),
+        )
         system_prompt = build_system_prompt(rules)
 
         # ── Step 2: Get modules from blueprint (L1 -> L8 compilation) ──
@@ -662,7 +690,7 @@ def generate_database_schema_for_job(
                         response = generate_schema(
                             system_prompt=system_prompt,
                             user_prompt=module_prompt,
-                            max_tokens=2000,
+                            max_tokens=3200,
                         )
                         batch_sql = response["content"]
                         usage = response.get("usage", {})
@@ -673,6 +701,14 @@ def generate_database_schema_for_job(
                         )
                         if not new_tables:
                             raise ValueError("batch response contained no CREATE TABLE")
+                        # A batch whose last CREATE TABLE was truncated (unbalanced
+                        # parens / no terminating ';') must be retried — otherwise
+                        # a corrupt table statement is stitched into the schema.
+                        if not _batch_well_formed(batch_sql):
+                            raise ValueError(
+                                f"batch has a truncated / unbalanced CREATE TABLE "
+                                f"(last table: {new_tables[-1]})"
+                            )
 
                         total_input_tokens  += usage.get("input_tokens", 0)
                         total_output_tokens += usage.get("output_tokens", 0)
@@ -770,12 +806,12 @@ def generate_database_schema_for_job(
         # ── Step 4: Stitch & validate ────────────────────────────
         combined_sql = stitch_modules(all_sql_parts, project_name)
         validator    = SchemaValidator()
-        validation   = validator.validate(combined_sql)
+        validation   = validator.validate(combined_sql, high_criticality=high_criticality)
         total_tables = len(validation.tables_found)
 
         if validation.score < 80 and validation.issues:
             combined_sql, validation = run_fix_pass(
-                combined_sql, validation, system_prompt
+                combined_sql, validation, system_prompt, high_criticality=high_criticality
             )
 
         # ── Step 4b: Auto-iteration refinement (explicit stage) ──
@@ -788,15 +824,16 @@ def generate_database_schema_for_job(
             refinement = refine_until_clean(
                 combined_sql,
                 {
-                    "requirement":   requirement,
-                    "system_prompt": system_prompt,
-                    "session_id":    session_id,
-                    "project_id":    None,
+                    "requirement":      requirement,
+                    "system_prompt":    system_prompt,
+                    "session_id":       session_id,
+                    "project_id":       None,
+                    "high_criticality": high_criticality,
                 },
                 max_iterations=settings.SCHEMA_REFINE_MAX_ITERATIONS,
             )
             combined_sql = refinement.final_ddl
-            validation = validator.validate(combined_sql)   # reflect refined DDL
+            validation = validator.validate(combined_sql, high_criticality=high_criticality)   # reflect refined DDL
             total_tables = len(validation.tables_found)
 
             # ── Step 4b-gate: post-refinement completeness ──────────

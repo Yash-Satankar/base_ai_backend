@@ -22,9 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 # L1-L8 compile outputs are JSON plans — a few thousand tokens even for a large
-# domain. Capping the request here (vs the 12000 default) keeps calls near
-# Groq's free-tier per-minute window without truncating real plans.
-_L_COMPILE_MAX_TOKENS = 6000
+# domain, and L5+L6+L7 are compiled together in one call so a large domain's
+# combined relationships/lifecycles/modules JSON can run well past that. On
+# Groq's free tier this was capped low to stay near its 8000 tokens-per-minute
+# window; a cap that small TRUNCATES a big domain's JSON mid-array (an
+# "Expecting value" parse error), so only apply it on Groq. Other providers
+# (Together, Anthropic, Ollama) have no such per-minute ceiling.
+_L_COMPILE_MAX_TOKENS_GROQ = 6000
+_L_COMPILE_MAX_TOKENS_DEFAULT = 14000
 
 
 def generate_schema(system_prompt: str, user_prompt: str, max_tokens: int = None) -> dict:
@@ -34,11 +39,14 @@ def generate_schema(system_prompt: str, user_prompt: str, max_tokens: int = None
     blueprint job) and counts toward the warn-and-degrade budget.
     """
     from app.conversation.llm_client import call_llm
+    from app.core.config import settings
+    default_cap = (_L_COMPILE_MAX_TOKENS_GROQ if settings.AI_PROVIDER == "groq"
+                  else _L_COMPILE_MAX_TOKENS_DEFAULT)
     return call_llm(
         operation="blueprint_compile",
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        max_tokens=max_tokens or _L_COMPILE_MAX_TOKENS,
+        max_tokens=max_tokens or default_cap,
     )
 
 
@@ -181,16 +189,45 @@ Return ONLY valid JSON matching this schema:
 
 # ── L5, L6, L7: Relationships, Lifecycles, Modules ────────────────────────────
 
+_DECOMPOSITION_COUPLING_INSTRUCTION = """
+4. Schema decomposition is under consideration for this project. For every
+   entry in a module's "dependencies", classify the coupling in
+   "dependency_coupling" as:
+   - "tight": the depending module cannot function correctly without the
+     other in the same transaction (e.g. an order line item cannot be
+     correct without its order in the same atomic write) — modules linked
+     this way must stay in the same schema.
+   - "loose": an eventually-consistent reference (e.g. an order referencing
+     a customer, where the order can still function if the customer record
+     is briefly stale or unavailable) — modules linked this way are
+     eligible to become separate schema boundaries.
+   Only classify dependencies that are actually listed; leave
+   "dependency_coupling" empty for a module with no dependencies."""
+
+_DECOMPOSITION_COUPLING_SCHEMA_HINT = ',\n      "dependency_coupling": {"OtherModuleName": "tight" or "loose"}'
+
+
 def compile_l4_to_l5_l6_l7(
     l1: L1_UnderstandingSpec,
     l4: L4_EntitySpec,
+    *,
+    decomposition_requested: bool = False,
 ) -> Tuple[L5_RelationshipSpec, L6_LifecycleSpec, L7_ModuleSpec]:
-    """Generate L5 (Relationships), L6 (Lifecycles), and L7 (Modules) based on L4 Entities."""
+    """Generate L5 (Relationships), L6 (Lifecycles), and L7 (Modules) based on L4 Entities.
+
+    ``decomposition_requested`` is an additive branch, off by default: when
+    False (the default, single-schema path) the prompt is byte-identical to
+    before schema decomposition existed. Only set True after the user has
+    explicitly confirmed they want the project split into separate schemas
+    — see docs/enterprise_standards_spec.md §2.2/§2.4.
+    """
     system_prompt = """You are a Database Architect.
 For the L4 Entities provided:
 1. Define L5 Relationships (cardinalities, source, target).
 2. Define L6 Lifecycles (state machine transitions for mutable 'master' or 'event' entities).
-3. Group entities and workflows into L7 logical Modules.
+3. Group entities and workflows into L7 logical Modules.""" + (
+        _DECOMPOSITION_COUPLING_INSTRUCTION if decomposition_requested else ""
+    ) + """
 
 Return ONLY valid JSON matching this combined schema:
 {
@@ -224,7 +261,9 @@ Return ONLY valid JSON matching this combined schema:
       "description": "Module description",
       "entities": ["EntityA", "EntityB"],
       "workflows": ["WorkflowName"],
-      "dependencies": ["OtherModuleName"]
+      "dependencies": ["OtherModuleName"]""" + (
+        _DECOMPOSITION_COUPLING_SCHEMA_HINT if decomposition_requested else ""
+    ) + """
     }
   ]
 }"""

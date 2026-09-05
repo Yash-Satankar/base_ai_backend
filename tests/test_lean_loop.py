@@ -186,3 +186,97 @@ def test_generate_blueprint_returns_job_signal_not_sync_compile(stub_generate, m
     assert resp["stage"] == ConversationStage.COMPILING
     assert resp["requirement"]
     assert len(stub_generate) == 0                     # no L1-L8 calls in the request path
+
+
+# ── schema decomposition trigger (docs/enterprise_standards_spec.md §2.2) ──
+# SCHEMA_DECOMPOSITION_ENABLED defaults False — every test in this file above
+# already proves the default path is unaffected by the feature existing
+# (they never set the flag). These specifically exercise the opt-in flow.
+
+def test_decomposition_disabled_by_default_ignores_signal(stub_generate, monkeypatch):
+    """Even with a strong organizational signal present, the default
+    (flag off) must go straight to compile — zero behavior change unless
+    explicitly enabled."""
+    monkeypatch.setattr(turn_loop, "_domain_once", lambda s, t: ("e_commerce", ["e_commerce"]))
+    state = _state("clarifying")
+    state.requirement_summary = "The billing team and the clinical team need to operate independently."
+
+    resp = asyncio.run(turn_loop.run_turn(state, "generate blueprint", _assessment()))
+
+    assert resp["mode"] == "blueprint"
+    assert resp["stage"] == ConversationStage.COMPILING
+    assert state.decomposition_question_asked is False
+    assert state.decomposition_requested is None
+
+
+def test_decomposition_signal_asks_before_compiling_when_enabled(stub_generate, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "SCHEMA_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(turn_loop, "_domain_once", lambda s, t: ("e_commerce", ["e_commerce"]))
+    state = _state("clarifying")
+    state.requirement_summary = "The billing team and the clinical team need to operate independently."
+
+    resp = asyncio.run(turn_loop.run_turn(state, "generate blueprint", _assessment()))
+
+    assert resp.get("mode") is None                    # did NOT jump to compile
+    assert resp["stage"] == ConversationStage.CLARIFYING
+    assert "separate schemas" in resp["message"].lower()
+    assert state.decomposition_question_asked is True
+    assert state.decomposition_requested is None        # still pending
+    assert len(stub_generate) == 0                       # no L1-L8 calls yet
+
+
+def test_decomposition_yes_answer_proceeds_to_compile_with_flag_set(stub_generate, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "SCHEMA_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(turn_loop, "_domain_once", lambda s, t: ("e_commerce", ["e_commerce"]))
+    state = _state("clarifying")
+    state.decomposition_question_asked = True            # question was asked last turn
+
+    resp = asyncio.run(turn_loop.run_turn(state, "Yes, please use separate schemas", _assessment()))
+
+    assert resp["mode"] == "blueprint"
+    assert resp["stage"] == ConversationStage.COMPILING
+    assert state.decomposition_requested is True
+
+
+def test_decomposition_unified_answer_proceeds_to_compile_with_flag_unset(stub_generate, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "SCHEMA_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(turn_loop, "_domain_once", lambda s, t: ("e_commerce", ["e_commerce"]))
+    state = _state("clarifying")
+    state.decomposition_question_asked = True
+
+    resp = asyncio.run(turn_loop.run_turn(state, "Just one unified schema please", _assessment()))
+
+    assert resp["mode"] == "blueprint"
+    assert state.decomposition_requested is False
+
+
+def test_decomposition_ambiguous_answer_defaults_to_single_schema(stub_generate, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "SCHEMA_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(turn_loop, "_domain_once", lambda s, t: ("e_commerce", ["e_commerce"]))
+    state = _state("clarifying")
+    state.decomposition_question_asked = True
+
+    resp = asyncio.run(turn_loop.run_turn(state, "hmm not sure, whatever you think", _assessment()))
+
+    assert resp["mode"] == "blueprint"
+    assert state.decomposition_requested is False        # conservative default
+
+
+def test_decomposition_question_asked_at_most_once(stub_generate, monkeypatch):
+    """Once decomposition_requested is set, further 'generate blueprint'
+    turns must not re-ask even if the signal is still present in the text."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "SCHEMA_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(turn_loop, "_domain_once", lambda s, t: ("e_commerce", ["e_commerce"]))
+    state = _state("clarifying")
+    state.requirement_summary = "Separate teams will own separate schemas."
+    state.decomposition_question_asked = True
+    state.decomposition_requested = True
+
+    resp = asyncio.run(turn_loop.run_turn(state, "generate blueprint", _assessment()))
+
+    assert resp["mode"] == "blueprint"

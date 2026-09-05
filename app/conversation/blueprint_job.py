@@ -58,6 +58,7 @@ def run_blueprint_job(job_id: str, session_id: str, requirement: str) -> None:
                 domain=domain,
                 gst_required=gst_required,
                 scale=scale,
+                decomposition_requested=bool(state.decomposition_requested),
             )
         finally:
             llm_client.clear_context()

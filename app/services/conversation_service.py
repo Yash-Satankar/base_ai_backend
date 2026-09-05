@@ -250,9 +250,15 @@ def _compile_pipeline_blueprint(
     requirement: str,
     domain: str,
     gst_required: bool,
-    scale: str
+    scale: str,
+    decomposition_requested: bool = False,
 ) -> ProjectBlueprint:
-    """Helper to run the L1-L8 compilation pipeline and save L1-L7 metadata in state."""
+    """Helper to run the L1-L8 compilation pipeline and save L1-L7 metadata in state.
+
+    ``decomposition_requested`` defaults to False — the single-schema path —
+    and is only ever True after the user has explicitly confirmed splitting
+    the project into multiple schemas (see turn_loop._think_clarifying and
+    docs/enterprise_standards_spec.md §2.2)."""
     from app.engine.abstraction_pipeline import (
         generate_l1_understanding,
         compile_l1_to_l2,
@@ -268,7 +274,7 @@ def _compile_pipeline_blueprint(
     l2 = compile_l1_to_l2(l1)
     l3 = compile_l2_to_l3(l1, l2)
     l4 = compile_l3_to_l4(l1, l3)
-    l5, l6, l7 = compile_l4_to_l5_l6_l7(l1, l4)
+    l5, l6, l7 = compile_l4_to_l5_l6_l7(l1, l4, decomposition_requested=decomposition_requested)
     bp_spec = compile_to_l8_blueprint(l1, l4, l5, l6, l7)
 
     # Save L1-L7 data to state for downstream engines (Simulation, Council, etc.)
@@ -298,6 +304,7 @@ def _compile_pipeline_blueprint(
             "description": m.description,
             "tables": tables_list,
             "dependencies": m.dependencies,
+            "schema_name": m.schema_name,
         })
 
     return ProjectBlueprint(
@@ -309,6 +316,7 @@ def _compile_pipeline_blueprint(
         rules_to_apply=DOMAIN_MANDATORY_RULES.get(bp_spec.domain or domain, []),
         scale=bp_spec.scale or scale,
         gst_required=bp_spec.gst_required or gst_required,
+        decomposed=bp_spec.decomposed,
     )
 
 
@@ -472,6 +480,7 @@ def _blueprint_to_dict(blueprint: ProjectBlueprint) -> dict:
         "modules": blueprint.modules,
         "rules_to_apply": blueprint.rules_to_apply,
         "confirmed": blueprint.confirmed,
+        "decomposed": blueprint.decomposed,
     }
 
 

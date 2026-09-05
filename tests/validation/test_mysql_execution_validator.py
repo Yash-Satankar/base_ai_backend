@@ -14,8 +14,9 @@ Two groups:
   e.g. ``docker compose --profile validation up -d mysql-test`` then
   ``MYSQL_EXEC_VALIDATION_DSN=mysql://root:test@localhost:3310/ pytest``.
 
-Every real-MySQL case has a positive and a negative check, and the smells are
-drawn from the real dumps in ``Databases/`` (see ``scripts/reference_findings.md``).
+Every real-MySQL case has a positive and a negative check. The checks
+themselves are grounded in documented best practice, not observed compliance
+in ``Databases/`` — see ``docs/enterprise_standards_spec.md``.
 """
 
 import pytest
@@ -23,7 +24,10 @@ import pytest
 from app.services.mysql_execution_validator import (
     ExecutionResult,
     execute_and_validate,
+    execute_and_validate_schemas,
     _NoBackend,
+    _check_partition_fk_conflict,
+    _check_cross_schema_fk_violations,
 )
 from app.services import mysql_execution_validator as mev
 from app.services.planner_helpers import run_execution_gate, fold_execution_into_grade
@@ -104,6 +108,38 @@ def test_fold_grade_enterprise_errors_fail_advisories_only_nudge():
              "error_issue_count": 0, "advisory_issue_count": 3})
     assert nudge["combined_passed"] is True
     assert nudge["combined_score"] == 84  # 90 - 2*3
+
+
+# ── partition/FK conflict — pure function, no MySQL needed (§1c) ──────
+# Not wired into _enterprise_checks yet (nothing in the generator emits
+# PARTITION BY today) — these test the function directly so it's already
+# proven correct whenever a call site is added.
+
+def test_partition_fk_conflict_flags_partitioned_child():
+    fks = [{"name": "fk_x", "child_table": "big_transaction_all", "child_col": "a",
+            "parent_table": "ref_all", "parent_col": "id",
+            "delete_rule": "RESTRICT", "update_rule": "RESTRICT"}]
+    issues = _check_partition_fk_conflict({"big_transaction_all"}, fks)
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].category == "partition-fk-conflict"
+    assert issues[0].table == "big_transaction_all"
+
+
+def test_partition_fk_conflict_flags_partitioned_parent():
+    fks = [{"name": "fk_x", "child_table": "child_all", "child_col": "a",
+            "parent_table": "big_all", "parent_col": "id",
+            "delete_rule": "RESTRICT", "update_rule": "RESTRICT"}]
+    issues = _check_partition_fk_conflict({"big_all"}, fks)
+    assert len(issues) == 1
+    assert issues[0].table == "big_all"
+
+
+def test_partition_fk_conflict_clean_when_nothing_partitioned():
+    fks = [{"name": "fk_x", "child_table": "child_all", "child_col": "a",
+            "parent_table": "parent_all", "parent_col": "id",
+            "delete_rule": "RESTRICT", "update_rule": "RESTRICT"}]
+    assert _check_partition_fk_conflict(set(), fks) == []
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -286,9 +322,9 @@ def test_consistent_utf8mb4_has_no_charset_issue(run_ddl):
 
 
 # ── enterprise checks: FK referential action ──────────────────────
-# Empirical basis: of 127 real FK constraints, only 48% state ON DELETE and
-# 15% ON UPDATE. When explicit, ON DELETE is CASCADE 60/61 times
-# (tfyjqkpt_kaizen.sql: `... _ibfk_1 FOREIGN KEY (bud_id) ... ON DELETE CASCADE`).
+# Relationship-aware suggestions per PostgreSQL's documented decision
+# framework (docs/enterprise_standards_spec.md §1.1/§2.1) — not a single
+# blanket "use CASCADE" nudge calibrated to how often real dumps bother.
 
 def test_fk_left_at_implicit_restrict_is_advisory(run_ddl):
     ddl = """
@@ -321,6 +357,142 @@ def test_fk_with_explicit_cascade_is_clean(run_ddl):
     """
     r = run_ddl(ddl)
     assert not any(i.category == "fk-no-referential-action" for i in r.issues)
+
+
+def test_owned_child_fk_suggests_cascade(run_ddl):
+    ddl = """
+    CREATE TABLE invoice_header_all (id INT AUTO_INCREMENT PRIMARY KEY, created_on DATETIME, modified_on DATETIME)
+      ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE invoice_details_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, invoice_id INT NOT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_inv (invoice_id),
+      CONSTRAINT fk_invdet_inv FOREIGN KEY (invoice_id) REFERENCES invoice_header_all (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    hits = [i for i in r.issues if i.category == "fk-no-referential-action"]
+    assert hits
+    assert "ON DELETE CASCADE ON UPDATE CASCADE" in hits[0].message
+    assert "component" in hits[0].message.lower()
+
+
+def test_independent_entities_fk_suggests_restrict(run_ddl):
+    ddl = """
+    CREATE TABLE warehouse_header_all (id INT AUTO_INCREMENT PRIMARY KEY, created_on DATETIME, modified_on DATETIME)
+      ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE shipment_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, warehouse_id INT NOT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_wh (warehouse_id),
+      CONSTRAINT fk_ship_wh FOREIGN KEY (warehouse_id) REFERENCES warehouse_header_all (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    hits = [i for i in r.issues if i.category == "fk-no-referential-action"]
+    assert hits
+    assert "ON DELETE RESTRICT ON UPDATE CASCADE" in hits[0].message
+    assert "independent" in hits[0].message.lower()
+
+
+def test_soft_delete_parent_fk_suggests_restrict_never_cascade(run_ddl):
+    ddl = """
+    CREATE TABLE customer_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, deleted_at DATETIME NULL,
+      created_on DATETIME, modified_on DATETIME
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE order_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, customer_id INT NOT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_cust (customer_id),
+      CONSTRAINT fk_order_cust FOREIGN KEY (customer_id) REFERENCES customer_header_all (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    hits = [i for i in r.issues if i.category == "fk-no-referential-action"]
+    assert hits
+    assert "ON DELETE RESTRICT" in hits[0].message
+    assert "soft-deletable" in hits[0].message.lower()
+    assert "deleted_at" in hits[0].message
+
+
+def test_nullable_optional_fk_suggests_set_null(run_ddl):
+    ddl = """
+    CREATE TABLE manager_header_all (id INT AUTO_INCREMENT PRIMARY KEY, created_on DATETIME, modified_on DATETIME)
+      ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE employee_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, manager_id INT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_mgr (manager_id),
+      CONSTRAINT fk_emp_mgr FOREIGN KEY (manager_id) REFERENCES manager_header_all (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    hits = [i for i in r.issues if i.category == "fk-no-referential-action"]
+    assert hits
+    assert "ON DELETE SET NULL" in hits[0].message
+    assert "optional" in hits[0].message.lower()
+
+
+# ── enterprise checks: soft-delete + CASCADE conflict ──────────────
+# A distinct, more specific finding than "left implicit" above: here the
+# action IS explicit, and it's the wrong one — CASCADE never fires on the
+# UPDATE a soft delete actually performs (docs/enterprise_standards_spec.md §1.1/§1.6).
+
+def test_explicit_cascade_on_soft_delete_parent_flagged(run_ddl):
+    ddl = """
+    CREATE TABLE account_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, is_deleted TINYINT NOT NULL DEFAULT 0,
+      created_on DATETIME, modified_on DATETIME
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE transaction_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, account_id INT NOT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_acct (account_id),
+      CONSTRAINT fk_txn_acct FOREIGN KEY (account_id) REFERENCES account_header_all (id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    hits = [i for i in r.issues if i.category == "soft-delete-cascade-conflict"]
+    assert hits
+    assert hits[0].severity == "advisory"
+    assert "is_deleted" in hits[0].message
+    assert hits[0].table == "account_header_all"
+
+
+def test_cascade_on_non_soft_delete_parent_not_flagged(run_ddl):
+    ddl = """
+    CREATE TABLE order_header_all (id INT AUTO_INCREMENT PRIMARY KEY, created_on DATETIME, modified_on DATETIME)
+      ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE order_details_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, order_id INT NOT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_ord (order_id),
+      CONSTRAINT fk_orddet_ord FOREIGN KEY (order_id) REFERENCES order_header_all (id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    assert not any(i.category == "soft-delete-cascade-conflict" for i in r.issues)
+
+
+def test_restrict_on_soft_delete_parent_not_flagged_as_conflict(run_ddl):
+    ddl = """
+    CREATE TABLE account_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, deleted_at DATETIME NULL,
+      created_on DATETIME, modified_on DATETIME
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE transaction_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, account_id INT NOT NULL,
+      created_on DATETIME, modified_on DATETIME,
+      KEY k_acct (account_id),
+      CONSTRAINT fk_txn_acct FOREIGN KEY (account_id) REFERENCES account_header_all (id)
+        ON DELETE RESTRICT ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    r = run_ddl(ddl)
+    assert not any(i.category == "soft-delete-cascade-conflict" for i in r.issues)
 
 
 # ── enterprise checks: multi-FK table indexing ───────────────────
@@ -432,3 +604,142 @@ def test_distinct_indexes_are_clean(run_ddl):
     """
     r = run_ddl(ddl)
     assert not any(i.category == "redundant-index" for i in r.issues)
+
+
+# ─────────────────── multi-schema validation (decomposed projects) ────────
+# docs/enterprise_standards_spec.md §2.4/§6. execute_and_validate above is
+# completely untouched — these exercise the additive multi-schema path.
+
+@pytest.fixture
+def multi_schema_enabled(_mysql_dsn, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "MYSQL_EXEC_VALIDATION_ENABLED", True)
+    monkeypatch.setattr(settings, "MYSQL_EXEC_VALIDATION_DSN", _mysql_dsn)
+    monkeypatch.setattr(settings, "MYSQL_EXEC_VALIDATION_USE_TESTCONTAINER", False)
+    monkeypatch.setenv("MYSQL_EXEC_VALIDATION_DSN", _mysql_dsn)
+    return _mysql_dsn
+
+
+def test_two_independent_clean_schemas_both_succeed(multi_schema_enabled):
+    identity_ddl = """
+    CREATE TABLE customer_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(120) NOT NULL,
+      created_on DATETIME NOT NULL, modified_on DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    billing_ddl = """
+    CREATE TABLE plan_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(80) NOT NULL,
+      created_on DATETIME NOT NULL, modified_on DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    results = execute_and_validate_schemas({"identity": identity_ddl, "billing": billing_ddl})
+
+    assert set(results) == {"identity", "billing"}
+    for name in ("identity", "billing"):
+        r = results[name]
+        assert r.skipped is False
+        assert r.success is True, r.ddl_errors
+        assert not any(i.category == "cross-schema-fk-violation" for i in r.issues)
+    assert results["identity"].tables_created == ["customer_header_all"]
+    assert results["billing"].tables_created == ["plan_header_all"]
+
+
+def test_ddl_error_in_one_schema_does_not_affect_the_other(multi_schema_enabled):
+    broken_ddl = "CREATE TABLE bad_all (id INT PRIMARY KEY, x INT, x INT) ENGINE=InnoDB;"
+    clean_ddl = """
+    CREATE TABLE ok_header_all (
+      id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(80) NOT NULL,
+      created_on DATETIME NOT NULL, modified_on DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    results = execute_and_validate_schemas({"broken": broken_ddl, "clean": clean_ddl})
+
+    assert results["broken"].success is False
+    assert results["broken"].ddl_errors
+    assert results["clean"].success is True
+    assert results["clean"].tables_created == ["ok_header_all"]
+
+
+def test_check_cross_schema_fk_violations_detects_a_real_cross_database_fk(multi_schema_enabled):
+    """Direct unit test of the detection query itself, using two real,
+    fixed-name databases and a genuine same-server cross-database FK — the
+    defense-in-depth case split_ddl_by_schema is meant to prevent from ever
+    reaching here, but this proves the check catches it if something does."""
+    import pymysql
+    from app.services import mysql_execution_validator as mev
+
+    base = mev._parse_dsn(multi_schema_enabled)
+    admin = {k: v for k, v in base.items() if k != "database"}
+    db_a, db_b = "execval_test_xfk_a", "execval_test_xfk_b"
+
+    conn = pymysql.connect(**admin)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+            for db in (db_a, db_b):
+                cur.execute(f"DROP DATABASE IF EXISTS `{db}`")
+                cur.execute(f"CREATE DATABASE `{db}` CHARACTER SET utf8mb4")
+            cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+            cur.execute(f"USE `{db_a}`")
+            cur.execute(
+                "CREATE TABLE parent_all (id INT PRIMARY KEY) ENGINE=InnoDB "
+                "DEFAULT CHARSET=utf8mb4;"
+            )
+            cur.execute(f"USE `{db_b}`")
+            cur.execute(
+                f"CREATE TABLE child_all (id INT PRIMARY KEY, parent_id INT, "
+                f"KEY k_parent (parent_id), "
+                f"CONSTRAINT fk_child_parent FOREIGN KEY (parent_id) "
+                f"REFERENCES `{db_a}`.parent_all(id)"
+                f") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+            )
+        conn.commit()
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            issues = mev._check_cross_schema_fk_violations(cur, [db_a, db_b])
+
+        assert len(issues) == 1
+        assert issues[0].severity == "error"
+        assert issues[0].category == "cross-schema-fk-violation"
+        assert issues[0].table == f"{db_b}.child_all"
+        assert db_a in issues[0].message and "parent_all" in issues[0].message
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+            for db in (db_a, db_b):
+                cur.execute(f"DROP DATABASE IF EXISTS `{db}`")
+            cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+        conn.commit()
+        conn.close()
+
+
+def test_check_cross_schema_fk_violations_clean_when_no_cross_refs(multi_schema_enabled):
+    import pymysql
+    from app.services import mysql_execution_validator as mev
+
+    base = mev._parse_dsn(multi_schema_enabled)
+    admin = {k: v for k, v in base.items() if k != "database"}
+    db_a, db_b = "execval_test_noxfk_a", "execval_test_noxfk_b"
+
+    conn = pymysql.connect(**admin)
+    try:
+        with conn.cursor() as cur:
+            for db in (db_a, db_b):
+                cur.execute(f"DROP DATABASE IF EXISTS `{db}`")
+                cur.execute(f"CREATE DATABASE `{db}` CHARACTER SET utf8mb4")
+            cur.execute(f"USE `{db_a}`")
+            cur.execute("CREATE TABLE a_all (id INT PRIMARY KEY) ENGINE=InnoDB;")
+            cur.execute(f"USE `{db_b}`")
+            cur.execute("CREATE TABLE b_all (id INT PRIMARY KEY) ENGINE=InnoDB;")
+        conn.commit()
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            issues = mev._check_cross_schema_fk_violations(cur, [db_a, db_b])
+        assert issues == []
+    finally:
+        with conn.cursor() as cur:
+            for db in (db_a, db_b):
+                cur.execute(f"DROP DATABASE IF EXISTS `{db}`")
+        conn.commit()
+        conn.close()

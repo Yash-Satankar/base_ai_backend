@@ -25,14 +25,20 @@ The MySQL backend is resolved in this order:
 It is gated behind ``MYSQL_EXEC_VALIDATION_ENABLED`` (default off) because a real
 DB spin-up is slow relative to a normal request.
 
-The enterprise-check thresholds are not guessed — they are mined from the ~34
-real production dumps in ``Databases/`` by ``scripts/mine_reference_dumps.py``;
-the numbers quoted in the findings come from
-``app/validators/reference_thresholds.json``. See ``scripts/reference_findings.md``.
+The enterprise checks below are grounded in documented, cited best practice —
+official MySQL/PostgreSQL documentation, respected database-design literature,
+and real company engineering writeups — not in observed-average compliance
+from the 34 real production dumps in ``Databases/``. Those dumps remain
+useful as domain-narrative reference material (what a financial-ledger or
+logistics schema's entities look like) but are no longer the quality bar; see
+``docs/enterprise_standards_spec.md`` for the research and rationale behind
+each check below. (The original empirical mining — ``scripts/mine_reference_dumps.py``,
+``app/validators/reference_thresholds.json``, ``scripts/reference_findings.md``
+— is kept as a historical record of how the checks were first discovered, not
+as a live source of truth.)
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -40,7 +46,6 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
-from pathlib import Path
 from typing import Iterator, Literal, Optional
 
 from app.core.config import settings
@@ -48,19 +53,6 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 Severity = Literal["error", "advisory"]
-
-_THRESHOLDS_PATH = Path(__file__).resolve().parent.parent / "validators" / "reference_thresholds.json"
-
-
-def _load_thresholds() -> dict:
-    try:
-        return json.loads(_THRESHOLDS_PATH.read_text(encoding="utf-8"))
-    except Exception:  # pragma: no cover - only if the mined file is missing
-        return {"derived_thresholds": {}, "foreign_keys": {}, "charset": {}, "timestamps": {}}
-
-
-_TH = _load_thresholds()
-_DT = _TH.get("derived_thresholds", {})
 
 # Column-name families that count as an audit timestamp (mirrors the miner).
 _CREATED_COLS = ("created_on", "created_at", "created_date", "createddate",
@@ -431,6 +423,237 @@ def execute_and_validate(ddl: str) -> ExecutionResult:
     return result
 
 
+# ── multi-schema validation (decomposed projects) ──────────────────
+# docs/enterprise_standards_spec.md §2.4/§6. Additive: execute_and_validate
+# above is completely untouched, so the default single-schema path is
+# unaffected by this section's existence.
+
+@contextmanager
+def _acquire_mysql_multi(schema_names: list[str]) -> Iterator[tuple[dict, dict[str, str], str]]:
+    """Like ``_acquire_mysql``, but creates one throwaway database PER schema
+    name, all on the same server connection — so a foreign key between two
+    of them is something MySQL can actually create (same-server cross-
+    database FKs work in MySQL/InnoDB) and therefore something
+    ``_check_cross_schema_fk_violations`` can actually detect once every
+    schema is loaded together. Yields
+    ``(admin_connect_kwargs, {schema_name: real_db_name}, backend_name)``.
+    Deliberately independent of ``_acquire_mysql`` (some duplication
+    accepted) rather than refactoring it, so the existing single-schema path
+    can't be affected by this addition."""
+    dsn = settings.MYSQL_EXEC_VALIDATION_DSN or os.environ.get("MYSQL_EXEC_VALIDATION_DSN")
+
+    def _real_db_names() -> dict[str, str]:
+        return {
+            s: f"execval_{re.sub(r'[^a-z0-9_]', '_', s.lower())}_{uuid.uuid4().hex[:6]}"
+            for s in schema_names
+        }
+
+    if dsn:
+        import pymysql
+        base = _parse_dsn(dsn)
+        admin = {k: v for k, v in base.items() if k != "database"}
+        real_db = _real_db_names()
+        try:
+            conn = pymysql.connect(**admin)
+            with conn.cursor() as cur:
+                for db in real_db.values():
+                    cur.execute(
+                        f"CREATE DATABASE `{db}` "
+                        f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            raise _NoBackend(
+                f"DSN user cannot CREATE DATABASE for multi-schema validation ({e}) — "
+                f"multi-schema validation needs several independent databases at once, "
+                f"so the existing-database fallback single-schema validation uses isn't "
+                f"available here; grant CREATE"
+            )
+        try:
+            yield admin, real_db, "dsn"
+        finally:
+            try:
+                conn = pymysql.connect(**admin)
+                with conn.cursor() as cur:
+                    # A cross-schema FK slipping through (exactly what this
+                    # module exists to detect) would otherwise make the
+                    # parent database undroppable while the child's FK is live.
+                    cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+                    for db in real_db.values():
+                        cur.execute(f"DROP DATABASE IF EXISTS `{db}`")
+                    cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+                conn.commit()
+                conn.close()
+            except Exception as e:  # pragma: no cover
+                logger.warning("execval: failed to drop multi-schema scratch DBs: %s", e)
+        return
+
+    if settings.MYSQL_EXEC_VALIDATION_USE_TESTCONTAINER:
+        try:
+            try:
+                from testcontainers.community.mysql import MySqlContainer  # type: ignore
+            except Exception:
+                from testcontainers.mysql import MySqlContainer  # type: ignore
+        except Exception as e:
+            raise _NoBackend(
+                "no MYSQL_EXEC_VALIDATION_DSN set and testcontainers is not installed "
+                f"({e}); install `testcontainers[mysql]` or point the DSN at a MySQL 8 server"
+            )
+        try:
+            container = MySqlContainer("mysql:8.0")
+            container.start()
+        except Exception as e:
+            raise _NoBackend(
+                f"could not start an ephemeral MySQL container (is Docker running?): {e}"
+            )
+        try:
+            import pymysql
+            admin = _parse_dsn(container.get_connection_url())
+            admin.pop("database", None)
+            real_db = _real_db_names()
+            conn = pymysql.connect(**admin)
+            with conn.cursor() as cur:
+                for db in real_db.values():
+                    cur.execute(
+                        f"CREATE DATABASE `{db}` "
+                        f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    )
+            conn.commit()
+            conn.close()
+            yield admin, real_db, "testcontainers"
+        finally:
+            try:
+                container.stop()
+            except Exception as e:  # pragma: no cover
+                logger.warning("execval: failed to stop MySQL container: %s", e)
+        return
+
+    raise _NoBackend(
+        "MySQL execution validation is enabled but no backend is available: "
+        "set MYSQL_EXEC_VALIDATION_DSN or allow MYSQL_EXEC_VALIDATION_USE_TESTCONTAINER with Docker running"
+    )
+
+
+def execute_and_validate_schemas(schemas: dict[str, str]) -> dict[str, ExecutionResult]:
+    """Multi-schema counterpart to ``execute_and_validate`` — runs each
+    schema's DDL into its own real database on the SAME MySQL server, then
+    checks for any foreign key crossing a schema boundary across the full
+    set together (docs/enterprise_standards_spec.md §2.4/§6). Each schema's
+    own ``ExecutionResult`` is otherwise exactly what ``execute_and_validate``
+    would have produced for it standalone — the cross-schema check is the
+    only thing that genuinely can't be computed one schema at a time."""
+    t0 = time.time()
+    import pymysql
+    from pymysql.err import MySQLError
+
+    schema_names = list(schemas)
+    results = {name: ExecutionResult(success=False, executed=False) for name in schema_names}
+
+    try:
+        backend_cm = _acquire_mysql_multi(schema_names)
+        admin_kwargs, real_db, backend = backend_cm.__enter__()
+    except _NoBackend as e:
+        for r in results.values():
+            r.skipped, r.skip_reason = True, str(e)
+            r.duration_seconds = round(time.time() - t0, 2)
+        return results
+    except Exception as e:  # pragma: no cover - misconfigured DSN, unreachable host …
+        logger.error("[execval] multi-schema backend unavailable: %s", e, exc_info=True)
+        for r in results.values():
+            r.skipped, r.skip_reason = True, f"backend error: {e}"
+            r.duration_seconds = round(time.time() - t0, 2)
+        return results
+
+    try:
+        for name in schema_names:
+            r = results[name]
+            r.backend = backend
+            conn = pymysql.connect(**{**admin_kwargs, "database": real_db[name]})
+            try:
+                r.executed = True
+                with conn.cursor() as cur:
+                    cur.execute("SELECT VERSION()")
+                    r.mysql_version = cur.fetchone()[0]
+                    cur.execute(
+                        "SET SESSION sql_mode = "
+                        "'STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION,ERROR_FOR_DIVISION_BY_ZERO'"
+                    )
+                for stmt in _split_statements(schemas[name]):
+                    r.statements_run += 1
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(stmt)
+                            try:
+                                cur.fetchall()
+                            except Exception:
+                                pass
+                        conn.commit()
+                    except MySQLError as e:  # noqa: PERF203
+                        r.statements_failed += 1
+                        errno = e.args[0] if e.args else None
+                        msg = e.args[1] if len(e.args) > 1 else str(e)
+                        r.ddl_errors.append(f"[MySQL {errno}] {msg}  (at: {_stmt_preview(stmt)})")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+            finally:
+                conn.close()
+
+        # Per-schema enterprise checks, once every schema has finished loading.
+        for name in schema_names:
+            r = results[name]
+            try:
+                conn = pymysql.connect(**{**admin_kwargs, "database": real_db[name]})
+                try:
+                    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                        r.tables_created = _list_base_tables(cur, real_db[name])
+                        if r.tables_created:
+                            r.issues.extend(_enterprise_checks(cur, real_db[name]))
+                finally:
+                    conn.close()
+            except Exception as e:  # pragma: no cover
+                r.warnings.append(f"enterprise checks incomplete: {e}")
+
+        # Cross-schema FK check — the one thing that needs the full set at once.
+        try:
+            conn = pymysql.connect(**admin_kwargs)
+            try:
+                with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                    violations = _check_cross_schema_fk_violations(cur, list(real_db.values()))
+            finally:
+                conn.close()
+            db_to_schema = {db: name for name, db in real_db.items()}
+            for v in violations:
+                owner = db_to_schema.get((v.table or "").split(".")[0])
+                if owner in results:
+                    results[owner].issues.append(v)
+        except Exception as e:  # pragma: no cover
+            for r in results.values():
+                r.warnings.append(f"cross-schema FK check incomplete: {e}")
+
+    except Exception as e:  # pragma: no cover - unexpected driver / network fault
+        for r in results.values():
+            r.warnings.append(f"execution aborted: {e}")
+        logger.error("[execval] multi-schema execution aborted: %s", e, exc_info=True)
+    finally:
+        try:
+            backend_cm.__exit__(None, None, None)
+        except Exception as e:  # pragma: no cover
+            logger.warning("[execval] multi-schema backend teardown failed: %s", e)
+
+    for name in schema_names:
+        r = results[name]
+        r.success = r.executed and not r.ddl_errors
+        r.enterprise_score = max(
+            0, 100 - sum(_SCORE_PENALTY[i.severity] for i in r.issues) - (10 if r.ddl_errors else 0),
+        )
+        r.duration_seconds = round(time.time() - t0, 2)
+        logger.info("[execval:%s] %s", name, r.summary())
+    return results
+
+
 # ── introspection helpers ──────────────────────────────────────────
 
 def _list_base_tables(cur, schema: str) -> list[str]:
@@ -444,7 +667,7 @@ def _list_base_tables(cur, schema: str) -> list[str]:
 
 def _columns_by_table(cur, schema: str) -> dict[str, list[dict]]:
     cur.execute(
-        "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY "
+        "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY, IS_NULLABLE "
         "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s "
         "ORDER BY TABLE_NAME, ORDINAL_POSITION",
         (schema,),
@@ -552,7 +775,8 @@ def _enterprise_checks(cur, schema: str) -> list[ExecutionIssue]:
     idx_by_table = _secondary_indexes(cur, schema)
     meta = _table_meta(cur, schema)
 
-    issues += _check_fk_referential_actions(fks)
+    issues += _check_fk_referential_actions(fks, cols_by_table)
+    issues += _check_soft_delete_cascade_conflict(fks, cols_by_table)
     issues += _check_fk_type_alignment(fks, cols_by_table)
     issues += _check_multi_fk_secondary_index(cols_by_table, _leading_index_cols(cur, schema))
     issues += _check_missing_timestamps(cols_by_table, fks)
@@ -562,31 +786,254 @@ def _enterprise_checks(cur, schema: str) -> list[ExecutionIssue]:
     return issues
 
 
-def _check_fk_referential_actions(fks: list[dict]) -> list[ExecutionIssue]:
-    """Empirical basis: of 127 FK constraints in the real dumps, only 48% spell
-    out ON DELETE and 15% ON UPDATE — the rest inherit MySQL's silent RESTRICT.
-    (reference_thresholds.json → foreign_keys). Advisory, not error: an implicit
-    RESTRICT is legal, just rarely intentional. When a real dump *is* explicit it
-    picks CASCADE 60/61 times, so that is the suggested default."""
-    rate = _TH.get("foreign_keys", {}).get("with_explicit_on_delete_pct", 48.0)
-    suggest = _DT.get("most_common_explicit_on_delete", "CASCADE")
+# Enterprise-grade referential-action guidance (see docs/enterprise_standards_spec.md
+# §1.1 / §2.1). Not calibrated from Databases/ — there is no authoritative source
+# for "X% of FKs should be explicit"; what's well-documented is a real decision
+# framework (PostgreSQL's own docs) for WHICH action fits a relationship, plus a
+# hard MySQL constraint (InnoDB rejects SET DEFAULT outright) and a documented
+# incompatibility (CASCADE never fires on the UPDATE a soft-delete performs, so
+# it must never be suggested for a soft-deletable parent — see
+# _check_soft_delete_cascade_conflict below for the "already wrong" case).
+_SOFT_DELETE_COLS = {"deleted_at", "deleted_on", "is_deleted"}
+
+# Suffixes this generator's own naming convention uses for a table that is a
+# structural *component* of its "_header_all" parent and cannot meaningfully
+# exist without it (line items, the archive mirror, the lifecycle trail) —
+# PostgreSQL's docs: "when the referencing table represents something that is
+# a component of what is represented by the referenced table and cannot exist
+# independently, then CASCADE could be appropriate."
+_OWNED_CHILD_SUFFIXES = ("_details_all", "_detail_all", "_line_item_all",
+                         "_life_cycle_all", "_archive_all")
+_TABLE_BASE_SUFFIXES = (
+    "_header_all", "_transaction_all", "_configuration_all",
+    "_details_all", "_detail_all", "_line_item_all",
+    "_life_cycle_all", "_archive_all", "_all",
+)
+
+
+def _table_base(name: str) -> str:
+    """Strip this generator's own role suffix to get the entity's base name,
+    e.g. 'invoice_details_all' and 'invoice_header_all' both -> 'invoice'."""
+    lname = name.lower()
+    for suf in _TABLE_BASE_SUFFIXES:
+        if lname.endswith(suf):
+            return lname[: -len(suf)]
+    return lname
+
+
+def _has_soft_delete_column(cols: list[dict]) -> Optional[str]:
+    for c in cols:
+        if c["COLUMN_NAME"].lower() in _SOFT_DELETE_COLS:
+            return c["COLUMN_NAME"]
+    return None
+
+
+def _is_owned_child(child_table: str, parent_table: str) -> bool:
+    return (child_table.lower().endswith(_OWNED_CHILD_SUFFIXES)
+            and _table_base(child_table) == _table_base(parent_table))
+
+
+def _fk_column_nullable(fk: dict, cols_by_table: dict) -> bool:
+    for c in cols_by_table.get(fk["child_table"], []):
+        if c["COLUMN_NAME"].lower() == (fk["child_col"] or "").lower():
+            return (c.get("IS_NULLABLE") or "").upper() == "YES"
+    return False
+
+
+def _suggest_fk_actions(fk: dict, cols_by_table: dict) -> tuple[str, str, str]:
+    """Returns (on_delete, on_update, reason) for an FK currently left at the
+    implicit RESTRICT/NO ACTION on both sides. Relationship-aware, per
+    PostgreSQL's documented decision framework — not a single blanket
+    suggestion. Never returns SET DEFAULT: InnoDB rejects it outright at
+    CREATE TABLE time, so it is never a usable suggestion on MySQL."""
+    parent_cols = cols_by_table.get(fk["parent_table"], [])
+    soft_delete_col = _has_soft_delete_column(parent_cols)
+    if soft_delete_col:
+        return ("RESTRICT", "CASCADE", (
+            f"{fk['parent_table']} is soft-deletable (has a `{soft_delete_col}` "
+            f"column) — a soft delete is an UPDATE, so ON DELETE CASCADE would "
+            f"never actually fire and gives a false sense of automatic cleanup. "
+            f"Keep ON DELETE RESTRICT and clean up children explicitly in code."
+        ))
+    if _is_owned_child(fk["child_table"], fk["parent_table"]):
+        return ("CASCADE", "CASCADE", (
+            f"{fk['child_table']} is a structural component of "
+            f"{fk['parent_table']} (line items / archive / lifecycle trail) and "
+            f"cannot meaningfully exist without it — CASCADE is the documented "
+            f"fit for an owned-child relationship."
+        ))
+    if _fk_column_nullable(fk, cols_by_table):
+        return ("SET NULL", "CASCADE", (
+            f"{fk['child_table']}.{fk['child_col']} is nullable — this FK "
+            f"represents an optional reference, so SET NULL fits better than "
+            f"blocking the delete."
+        ))
+    return ("RESTRICT", "CASCADE", (
+        f"{fk['child_table']} and {fk['parent_table']} are independent "
+        f"entities (neither owns the other) — RESTRICT is the documented fit "
+        f"so an accidental delete of a referenced row is blocked, not silently "
+        f"propagated."
+    ))
+
+
+def _check_fk_referential_actions(fks: list[dict], cols_by_table: dict) -> list[ExecutionIssue]:
+    """Every FK left at the implicit RESTRICT/NO ACTION on both sides gets a
+    relationship-aware suggestion (see _suggest_fk_actions) instead of one
+    blanket "use CASCADE" nudge. Advisory: an implicit RESTRICT is legal SQL,
+    just rarely an intentional choice — the goal is to make the author pick
+    consciously, not to force one specific action."""
     out = []
     for fk in fks:
         d, u = (fk["delete_rule"] or "").upper(), (fk["update_rule"] or "").upper()
         if d in ("RESTRICT", "NO ACTION") and u in ("RESTRICT", "NO ACTION"):
+            on_delete, on_update, reason = _suggest_fk_actions(fk, cols_by_table)
             out.append(ExecutionIssue(
                 severity="advisory",
                 category="fk-no-referential-action",
                 message=(
                     f"FK `{fk['name']}` on {fk['child_table']}.{fk['child_col']} → "
                     f"{fk['parent_table']}.{fk['parent_col']} leaves ON DELETE / ON UPDATE "
-                    f"at the implicit RESTRICT. Only {rate}% of real-dump FKs are left "
-                    f"this way deliberately — state the intent explicitly "
-                    f"(e.g. ON DELETE {suggest} / SET NULL where the child is optional)."
+                    f"at the implicit RESTRICT — state the intent explicitly: "
+                    f"ON DELETE {on_delete} ON UPDATE {on_update}. {reason}"
                 ),
                 table=fk["child_table"],
                 object_name=fk["name"],
             ))
+    return out
+
+
+def _check_soft_delete_cascade_conflict(fks: list[dict], cols_by_table: dict) -> list[ExecutionIssue]:
+    """A table with a soft-delete indicator column (deleted_at / deleted_on /
+    is_deleted) that is ALSO the parent of an explicit ON DELETE CASCADE FK is
+    a distinct, more specific finding than "action left implicit" above: here
+    the action IS explicit, and it's actively the wrong one. A soft delete is
+    an UPDATE, not a DELETE, so the CASCADE never fires — children of a
+    "deleted" parent silently stay live and referencing it, which reads as
+    safe (there's a CASCADE!) but isn't. Advisory, not error: this is a
+    column-name heuristic (deleted_at/is_deleted could in principle be
+    repurposed for something else), so it's a strong design nudge rather than
+    a certain DDL-level defect the way a type mismatch or non-InnoDB engine
+    is."""
+    out = []
+    for fk in fks:
+        if (fk["delete_rule"] or "").upper() != "CASCADE":
+            continue
+        parent_cols = cols_by_table.get(fk["parent_table"], [])
+        soft_delete_col = _has_soft_delete_column(parent_cols)
+        if soft_delete_col:
+            out.append(ExecutionIssue(
+                severity="advisory",
+                category="soft-delete-cascade-conflict",
+                message=(
+                    f"FK `{fk['name']}` on {fk['child_table']}.{fk['child_col']} → "
+                    f"{fk['parent_table']}.{fk['parent_col']} is ON DELETE CASCADE, "
+                    f"but {fk['parent_table']} is soft-deletable (has a "
+                    f"`{soft_delete_col}` column). A soft delete is an UPDATE, not "
+                    f"a DELETE, so this CASCADE will never fire — it looks like "
+                    f"automatic cleanup but isn't. Use ON DELETE RESTRICT and "
+                    f"handle child cleanup explicitly (or hard-delete instead)."
+                ),
+                table=fk["parent_table"],
+                object_name=fk["name"],
+            ))
+    return out
+
+
+def _partitioned_tables(cur, schema: str) -> set[str]:
+    """Tables with at least one named partition. Not called from
+    _enterprise_checks yet — nothing in the generator recommends partitioning
+    today — but kept ready so _check_partition_fk_conflict can be wired in
+    with a single call-site change the moment that guidance is added."""
+    cur.execute(
+        "SELECT DISTINCT TABLE_NAME FROM information_schema.PARTITIONS "
+        "WHERE TABLE_SCHEMA=%s AND PARTITION_NAME IS NOT NULL",
+        (schema,),
+    )
+    return {r["TABLE_NAME"] for r in cur.fetchall()}
+
+
+def _check_partition_fk_conflict(partitioned_tables: set[str], fks: list[dict]) -> list[ExecutionIssue]:
+    """Hard MySQL/InnoDB restriction, not a style preference: "InnoDB tables
+    which have or which are referenced by foreign keys cannot be partitioned"
+    — a partitioned table can neither declare an FK nor be an FK's target.
+    Error severity: this isn't a judgment call, it's a DDL-level rejection
+    waiting to happen the moment partitioning is actually applied. Not yet
+    wired into _enterprise_checks (see _partitioned_tables) since nothing in
+    the generator emits PARTITION BY today; exists so the check is ready the
+    moment partitioning guidance lands."""
+    out = []
+    for fk in fks:
+        if fk["child_table"] in partitioned_tables:
+            out.append(ExecutionIssue(
+                severity="error",
+                category="partition-fk-conflict",
+                message=(
+                    f"{fk['child_table']} is partitioned and cannot declare "
+                    f"foreign key `{fk['name']}` — InnoDB does not allow a "
+                    f"partitioned table to have FK constraints."
+                ),
+                table=fk["child_table"], object_name=fk["name"],
+            ))
+        if fk["parent_table"] in partitioned_tables:
+            out.append(ExecutionIssue(
+                severity="error",
+                category="partition-fk-conflict",
+                message=(
+                    f"{fk['parent_table']} is partitioned and cannot be "
+                    f"referenced by foreign key `{fk['name']}` (from "
+                    f"{fk['child_table']}) — InnoDB does not allow a "
+                    f"partitioned table to be an FK target."
+                ),
+                table=fk["parent_table"], object_name=fk["name"],
+            ))
+    return out
+
+
+def _check_cross_schema_fk_violations(cur, schema_names: list[str]) -> list[ExecutionIssue]:
+    """Hard rule, not a suggestion (docs/enterprise_standards_spec.md
+    §2.3/§5c): once a project is decomposed into multiple schemas, NO
+    foreign key may cross a schema boundary — even though MySQL, on the
+    same server, would happily create and enforce one.
+    ``schema_decomposition.split_ddl_by_schema`` downgrades every FK it
+    finds crossing a boundary at generation time; this is the
+    defense-in-depth check that catches anything that slipped through (e.g.
+    a standalone ``ALTER TABLE … ADD CONSTRAINT`` the splitter's per-table
+    block scan doesn't see) once every one of a decomposed project's
+    schemas is loaded together — see ``execute_and_validate_schemas``.
+    Error severity: this is a design-boundary violation, not a performance
+    nudge."""
+    if len(schema_names) < 2:
+        return []
+    placeholders = ",".join(["%s"] * len(schema_names))
+    cur.execute(
+        f"""
+        SELECT kcu.CONSTRAINT_SCHEMA AS child_schema, kcu.TABLE_NAME AS child_table,
+               kcu.COLUMN_NAME AS child_col, kcu.CONSTRAINT_NAME AS name,
+               kcu.REFERENCED_TABLE_SCHEMA AS parent_schema,
+               kcu.REFERENCED_TABLE_NAME AS parent_table,
+               kcu.REFERENCED_COLUMN_NAME AS parent_col
+        FROM information_schema.KEY_COLUMN_USAGE kcu
+        WHERE kcu.CONSTRAINT_SCHEMA IN ({placeholders})
+          AND kcu.REFERENCED_TABLE_SCHEMA IS NOT NULL
+          AND kcu.REFERENCED_TABLE_SCHEMA <> kcu.CONSTRAINT_SCHEMA
+        """,
+        tuple(schema_names),
+    )
+    out = []
+    for r in cur.fetchall():
+        out.append(ExecutionIssue(
+            severity="error",
+            category="cross-schema-fk-violation",
+            message=(
+                f"FK `{r['name']}` on {r['child_schema']}.{r['child_table']}.{r['child_col']} "
+                f"references {r['parent_schema']}.{r['parent_table']}({r['parent_col']}) — a "
+                f"foreign key crossing a schema boundary. Once a project is decomposed, "
+                f"cross-schema references must be plain documented columns, never FK "
+                f"constraints (docs/enterprise_standards_spec.md §2.3)."
+            ),
+            table=f"{r['child_schema']}.{r['child_table']}",
+            object_name=r["name"],
+        ))
     return out
 
 
@@ -628,16 +1075,22 @@ _ID_COL_RE = re.compile(r".+_id$")
 
 
 def _check_multi_fk_secondary_index(cols_by_table: dict, leading_cols: dict) -> list[ExecutionIssue]:
-    """Empirical basis: every real-dump table carrying more than one FK also
-    leads an index with each FK column (33/33 = 100%,
-    reference_thresholds.json → indexes). An unindexed FK column table-scans on
-    joins and on parent deletes. Advisory.
+    """An unindexed FK column forces a full-table scan on every join through
+    it and on every parent-row delete/update integrity check — a real,
+    well-documented cost (Percona, MySQL's own optimizer docs on index
+    selection), not an imitation of what real-dump tables happen to do.
+    Indexing every FK column is kept as the *safe default* here; the
+    literature is genuinely split on whether to index FK columns mechanically
+    (SQL Server community: yes, proactively; Percona/Karwin's "Index Shotgun":
+    only where a query actually uses it) — this check picks the safe-default
+    side of that split deliberately, since an unused index is cheap relative
+    to a full scan on a live parent-delete. See
+    docs/enterprise_standards_spec.md §1.2. Advisory.
 
     This generator emits its schema with ``SET FOREIGN_KEY_CHECKS = 0`` and
     models most relationships as ``*_id`` columns with a COMMENT rather than a
-    declared CONSTRAINT (that is how the reference dumps are built too — only
-    9/34 declare any FK at all). So the check treats every ``<name>_id`` column
-    as FK-intent, not just formal constraints, and a column counts as covered if
+    declared CONSTRAINT, so the check treats every ``<name>_id`` column as
+    FK-intent, not just formal constraints, and a column counts as covered if
     it leads any index, PRIMARY included."""
     out = []
     for table, cols in cols_by_table.items():
@@ -653,8 +1106,9 @@ def _check_multi_fk_secondary_index(cols_by_table: dict, leading_cols: dict) -> 
                 category="multi-fk-missing-index",
                 message=(
                     f"{table} has {len(id_cols)} foreign-key columns but no leading index on "
-                    f"{', '.join(uncovered)}. In the reference dumps 100% of multi-FK "
-                    f"tables index every FK column — add KEY idx_{table}_<col> (<col>)."
+                    f"{', '.join(uncovered)} — an unindexed FK column forces a full "
+                    f"table scan on joins through it and on parent-row delete/update "
+                    f"checks. Add KEY idx_{table}_<col> (<col>)."
                 ),
                 table=table,
             ))
@@ -662,10 +1116,13 @@ def _check_multi_fk_secondary_index(cols_by_table: dict, leading_cols: dict) -> 
 
 
 def _check_missing_timestamps(cols_by_table: dict, fks: list[dict]) -> list[ExecutionIssue]:
-    """Empirical basis: only ~33% of real base tables carry any audit timestamp
-    (reference_thresholds.json → timestamps) — so this is an advisory, not an
-    error. Pure junction tables are exempt (architectural call; the strict
-    junction heuristic matched too few tables in the corpus to calibrate on).
+    """created_on/modified_on are cheap baseline audit metadata, independent
+    of whether a table also gets a full history/audit-log table (that's a
+    separate, much more contextual decision — see schema_validator.py's
+    data-preservation check and docs/enterprise_standards_spec.md §1.5/§2.5).
+    Advisory, not error: omitting them doesn't break anything, it just leaves
+    a gap in the audit trail. Pure junction tables are exempt — a pure link
+    row rarely needs its own audit trail distinct from the two rows it links.
     Accepts both the dominant `created_on`/`modified_on` and the `_at` variants."""
     fk_child_cols: dict[str, set[str]] = {}
     for fk in fks:
@@ -692,10 +1149,12 @@ def _check_missing_timestamps(cols_by_table: dict, fks: list[dict]) -> list[Exec
 
 
 def _check_engine(meta: dict) -> list[ExecutionIssue]:
-    """Empirical basis: 96.9% of real-dump tables are InnoDB
-    (reference_thresholds.json → engine). MyISAM has no transactions, row
-    locking, FK support or crash recovery — the proprietary patterns assume
-    InnoDB. Error severity."""
+    """MyISAM has no transactions, no row-level locking, no foreign-key
+    enforcement, and no crash recovery — this is documented MySQL engine
+    behavior (dev.mysql.com storage-engine docs), not a preference inferred
+    from how often real dumps happen to use InnoDB. Any schema with FK
+    relationships or that needs ACID guarantees is functionally incompatible
+    with MyISAM. Error severity."""
     out = []
     for table, m in meta.items():
         eng = (m.get("ENGINE") or "").lower()
@@ -713,10 +1172,12 @@ def _check_engine(meta: dict) -> list[ExecutionIssue]:
 
 
 def _check_charset_consistency(meta: dict) -> list[ExecutionIssue]:
-    """Empirical basis: 79.4% of real dumps mix >1 charset across their tables
-    (a latin1 legacy core with utf8mb4 bolted on); utf8mb4 is only 34.6% of
-    tables (reference_thresholds.json → charset). This check is what a *new*
-    schema should do better: one charset, and utf8mb4. Advisory."""
+    """utf8mb4 is the only MySQL charset that stores the full Unicode range
+    (emoji, most non-Latin scripts) in a single code path — latin1/utf8mb3
+    silently truncate or reject characters outside their range, and mixed
+    charsets across tables force a slow conversion on any cross-charset join
+    on a string key. This is uncontroversial, current MySQL guidance, not an
+    observation about how often real dumps get it wrong. Advisory."""
     charsets = {}
     for table, m in meta.items():
         coll = (m.get("TABLE_COLLATION") or "")
@@ -753,7 +1214,12 @@ def _check_charset_consistency(meta: dict) -> list[ExecutionIssue]:
 
 def _check_redundant_indexes(idx_by_table: dict) -> list[ExecutionIssue]:
     """A secondary index whose column list is a prefix of (or identical to)
-    another index on the same table is dead weight on every write. Advisory."""
+    another index on the same table is dead weight on every write — every
+    index adds real write-amplification (each extra index measurably
+    increases the cost of every INSERT/UPDATE/DELETE; Winand's
+    use-the-index-luke.com: "the first index makes the greatest difference"
+    to insert cost, each one after still adds real overhead), so a redundant
+    one is pure cost with zero benefit. Advisory."""
     out = []
     for table, groups in idx_by_table.items():
         seqs = [(g["name"], tuple(g["cols"])) for g in groups]

@@ -1,0 +1,208 @@
+[
+  {
+    "slug": "financial-ledger",
+    "domain": "Financial Ledger",
+    "session_id": "ccd8cb45-0906-46fe-b9f9-8b824c923b79",
+    "shippable": true,
+    "not_shippable_reasons": [],
+    "table_count": 22,
+    "tables_planned": 21,
+    "completeness_ratio": 1.0476,
+    "gate_completeness_ratio": 1.0476,
+    "completeness_min_ratio": 0.85,
+    "is_complete": true,
+    "iterations_used": 3,
+    "converged": true,
+    "degraded": false,
+    "structural_score": 98,
+    "structural_grade": "A",
+    "structural_blocking_issues": 0,
+    "structural_breakdown": {
+      "naming_convention": 20,
+      "audit_fields": 20,
+      "financial_compliance": 15,
+      "data_preservation": 15,
+      "index_constraints": 10,
+      "status_convention": 8,
+      "identity_system": 10
+    },
+    "mysql_execution": {
+      "success": true,
+      "skipped": false,
+      "ddl_error_count": 0,
+      "enterprise_error_count": 0,
+      "advisory_count": 0,
+      "advisory_threshold": 5,
+      "enterprise_score": 100,
+      "summary": "\u2705 executes cleanly | 25/25 statements | 0 engine error(s) | 0 enterprise error(s), 0 advisory | live-schema score 100/100"
+    },
+    "refinement_remaining_issues": [],
+    "combined_cost_usd": 0.031605,
+    "_cost_parts": {
+      "job_token_cost": 0.013486,
+      "refinement_cost": 0.018119
+    },
+    "elapsed_seconds": 475.4,
+    "files": {
+      "sql": null,
+      "pdf": null
+    },
+    "enterprise_findings": []
+  },
+  {
+    "slug": "saas-control-plane",
+    "domain": "Multi-Tenant SaaS",
+    "session_id": "4377f759-8153-4ece-95dd-38b76ca3c134",
+    "shippable": true,
+    "not_shippable_reasons": [],
+    "table_count": 40,
+    "tables_planned": 35,
+    "completeness_ratio": 1.1429,
+    "gate_completeness_ratio": 1.1429,
+    "completeness_min_ratio": 0.85,
+    "is_complete": true,
+    "iterations_used": 2,
+    "converged": true,
+    "degraded": false,
+    "structural_score": 96,
+    "structural_grade": "A",
+    "structural_blocking_issues": 0,
+    "structural_breakdown": {
+      "naming_convention": 20,
+      "audit_fields": 20,
+      "financial_compliance": 15,
+      "data_preservation": 15,
+      "index_constraints": 10,
+      "status_convention": 6,
+      "identity_system": 10
+    },
+    "mysql_execution": {
+      "success": true,
+      "skipped": false,
+      "ddl_error_count": 0,
+      "enterprise_error_count": 0,
+      "advisory_count": 1,
+      "advisory_threshold": 5,
+      "enterprise_score": 96,
+      "summary": "\u2705 executes cleanly | 43/43 statements | 0 engine error(s) | 0 enterprise error(s), 1 advisory | live-schema score 96/100"
+    },
+    "refinement_remaining_issues": [],
+    "combined_cost_usd": 0.038236,
+    "_cost_parts": {
+      "job_token_cost": 0.019617,
+      "refinement_cost": 0.018619
+    },
+    "elapsed_seconds": 596.5,
+    "files": {
+      "sql": null,
+      "pdf": null
+    },
+    "enterprise_findings": [
+      {
+        "severity": "advisory",
+        "category": "multi-fk-missing-index",
+        "message": "unique_id_header_all has 3 foreign-key columns but no leading index on last_id \u2014 an unindexed FK column forces a full table scan on joins through it and on parent-row delete/update checks. Add KEY idx"
+      }
+    ]
+  },
+  {
+    "slug": "logistics-freight",
+    "domain": "Logistics",
+    "session_id": "1aae07ca-ccc3-4cb1-98c1-a5b481687871",
+    "shippable": true,
+    "not_shippable_reasons": [],
+    "table_count": 35,
+    "tables_planned": 31,
+    "completeness_ratio": 1.129,
+    "gate_completeness_ratio": 1.129,
+    "completeness_min_ratio": 0.85,
+    "is_complete": true,
+    "iterations_used": 2,
+    "converged": true,
+    "degraded": false,
+    "structural_score": 100,
+    "structural_grade": "A",
+    "structural_blocking_issues": 0,
+    "structural_breakdown": {
+      "naming_convention": 20,
+      "audit_fields": 20,
+      "financial_compliance": 15,
+      "data_preservation": 15,
+      "index_constraints": 10,
+      "status_convention": 10,
+      "identity_system": 10
+    },
+    "mysql_execution": {
+      "success": true,
+      "skipped": false,
+      "ddl_error_count": 0,
+      "enterprise_error_count": 0,
+      "advisory_count": 0,
+      "advisory_threshold": 5,
+      "enterprise_score": 100,
+      "summary": "\u2705 executes cleanly | 38/38 statements | 0 engine error(s) | 0 enterprise error(s), 0 advisory | live-schema score 100/100"
+    },
+    "refinement_remaining_issues": [],
+    "combined_cost_usd": 0.03523,
+    "_cost_parts": {
+      "job_token_cost": 0.019156,
+      "refinement_cost": 0.016074
+    },
+    "elapsed_seconds": 696.4,
+    "files": {
+      "sql": null,
+      "pdf": null
+    },
+    "enterprise_findings": []
+  },
+  {
+    "slug": "healthcare-ehr",
+    "domain": "Healthcare (EHR)",
+    "session_id": "4ce947aa-17d6-4b2c-90e5-4b0dc6aaa19c",
+    "shippable": true,
+    "not_shippable_reasons": [],
+    "table_count": 35,
+    "tables_planned": 32,
+    "completeness_ratio": 1.0938,
+    "gate_completeness_ratio": 1.0938,
+    "completeness_min_ratio": 0.85,
+    "is_complete": true,
+    "iterations_used": 3,
+    "converged": true,
+    "degraded": false,
+    "structural_score": 100,
+    "structural_grade": "A",
+    "structural_blocking_issues": 0,
+    "structural_breakdown": {
+      "naming_convention": 20,
+      "audit_fields": 20,
+      "financial_compliance": 15,
+      "data_preservation": 15,
+      "index_constraints": 10,
+      "status_convention": 10,
+      "identity_system": 10
+    },
+    "mysql_execution": {
+      "success": true,
+      "skipped": false,
+      "ddl_error_count": 0,
+      "enterprise_error_count": 0,
+      "advisory_count": 0,
+      "advisory_threshold": 5,
+      "enterprise_score": 100,
+      "summary": "\u2705 executes cleanly | 38/38 statements | 0 engine error(s) | 0 enterprise error(s), 0 advisory | live-schema score 100/100"
+    },
+    "refinement_remaining_issues": [],
+    "combined_cost_usd": 0.043505,
+    "_cost_parts": {
+      "job_token_cost": 0.018385,
+      "refinement_cost": 0.02512
+    },
+    "elapsed_seconds": 798.6,
+    "files": {
+      "sql": null,
+      "pdf": null
+    },
+    "enterprise_findings": []
+  }
+]

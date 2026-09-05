@@ -91,6 +91,16 @@ class BlueprintModuleSpec(BaseModel):
         default_factory=list,
         description="Names of other modules that must be generated BEFORE this module (for foreign keys)."
     )
+    schema_name: Optional[str] = Field(
+        None,
+        description=(
+            "The bounded-context schema this module belongs to, when the "
+            "project has been decomposed into multiple schemas (see "
+            "docs/enterprise_standards_spec.md §2.2). None (the default) "
+            "means the module lives in the project's single implicit "
+            "schema — the ordinary, non-decomposed path."
+        ),
+    )
 
 
 class BlueprintSpec(BaseModel):
@@ -122,6 +132,22 @@ class BlueprintSpec(BaseModel):
         ...,
         description="Functional modules forming the database architecture."
     )
+    decomposed: bool = Field(
+        False,
+        description=(
+            "True when this project has been split into multiple "
+            "bounded-context schemas (each module's schema_name set) rather "
+            "than one implicit schema. Always False unless the user "
+            "explicitly confirmed decomposition — see "
+            "docs/enterprise_standards_spec.md §2.2."
+        ),
+    )
+
+    @property
+    def schema_names(self) -> List[str]:
+        """Distinct schema names in use, or [] when not decomposed."""
+        names = {m.schema_name for m in self.modules if m.schema_name}
+        return sorted(names)
 
     @property
     def total_tables(self) -> int:

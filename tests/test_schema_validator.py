@@ -6,7 +6,7 @@ three-layer data-preservation nudge.
 
 import pytest
 
-from app.validators.schema_validator import SchemaValidator, rule_count
+from app.validators.schema_validator import SchemaValidator, rule_count, is_high_criticality_domain
 
 
 GOOD_SCHEMA = """
@@ -98,8 +98,24 @@ def test_good_schema_passes_with_no_hardening_violations(validator):
 
 
 def test_good_schema_has_no_preservation_nudge_for_full_trio(validator):
-    r = validator.validate(GOOD_SCHEMA)
+    # high_criticality=True: HR/employee data is a plausible in-scope case,
+    # and the point of this test is the *complete-trio* exemption, which
+    # only matters once the nudge is in scope at all — see
+    # docs/enterprise_standards_spec.md §2.5.
+    r = validator.validate(GOOD_SCHEMA, high_criticality=True)
     # employee_* has header + archive + life_cycle → no rule 3/4 nudge
+    assert 3 not in _rule_ids(r)
+    assert 4 not in _rule_ids(r)
+
+
+def test_preservation_nudge_is_exempt_by_default_outside_high_criticality_domains(validator):
+    """rules 3/4 are scoped to financial/regulated/high-criticality domains
+    (docs/enterprise_standards_spec.md §2.1/§2.5) — no researched source
+    supports mandating a paired history table for every mutable business
+    entity regardless of domain. BAD_SCHEMA's payment_header_all has no
+    archive/life_cycle companion, but with the default high_criticality=False
+    the nudge must not fire at all."""
+    r = validator.validate(BAD_SCHEMA)
     assert 3 not in _rule_ids(r)
     assert 4 not in _rule_ids(r)
 
@@ -133,14 +149,44 @@ def test_float_money_still_flagged(validator):
     assert any(i.rule_id == 29 for i in r.issues)
 
 
-def test_bad_schema_missing_archive_and_lifecycle_nudges(validator):
-    r = validator.validate(BAD_SCHEMA)
+def test_bad_schema_missing_archive_and_lifecycle_nudges_in_financial_domain(validator):
+    # payment_header_all is exactly the kind of table this nudge is meant
+    # for once it's in scope — high_criticality=True represents a
+    # financial-domain caller (see is_high_criticality_domain).
+    r = validator.validate(BAD_SCHEMA, high_criticality=True)
     ids = _rule_ids(r)
     assert 3 in ids  # no payment_archive_all
     assert 4 in ids  # no payment_life_cycle_all
     assert all(
         i.severity == "low" for i in r.issues if i.rule_id in (3, 4)
     )
+
+
+# ── is_high_criticality_domain classifier ────────────────────────
+
+@pytest.mark.parametrize("domain", [
+    "financial ledger", "Banking", "insurance claims", "healthcare EHR",
+    "hospital management", "government payroll", "legal case management",
+])
+def test_high_criticality_keywords_detected(domain):
+    assert is_high_criticality_domain(domain) is True
+
+
+@pytest.mark.parametrize("domain", [
+    "logistics", "multi-tenant SaaS", "e-commerce", "warehouse management",
+    "", None,
+])
+def test_non_high_criticality_domains_not_flagged(domain):
+    assert is_high_criticality_domain(domain) is False
+
+
+def test_gst_required_flags_high_criticality_regardless_of_domain():
+    assert is_high_criticality_domain("logistics", gst_required=True) is True
+
+
+def test_named_compliance_requirement_flags_high_criticality():
+    assert is_high_criticality_domain("e-commerce", compliance_requirements=["PCI-DSS"]) is True
+    assert is_high_criticality_domain("e-commerce", compliance_requirements=[]) is False
 
 
 # ── Parser + summary ─────────────────────────────────────────────

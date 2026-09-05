@@ -24,6 +24,38 @@ def rule_count() -> int:
 _rule_count = rule_count
 
 
+# Domain keywords that make a schema's rule-3/4 archive/lifecycle-companion
+# nudge (see SchemaValidator._check_data_preservation) an in-scope, defensible
+# ask rather than a blanket mandate. No researched source supports "every
+# mutable business table needs a paired history table" — the well-sourced
+# guidance (Microsoft's own temporal-table usage docs, Fowler on event
+# sourcing) is scenario-based: apply it where compliance, forensics, or
+# point-in-time reporting is an articulable requirement. See
+# docs/enterprise_standards_spec.md §1.5/§2.1/§2.5.
+_HIGH_CRITICALITY_DOMAIN_KEYWORDS = (
+    "financ", "bank", "ledger", "accounting", "payment", "insurance",
+    "healthcare", "medical", "clinical", "hospital", "patient", "pharma",
+    "government", "legal", "compliance",
+)
+
+
+def is_high_criticality_domain(
+    domain: Optional[str],
+    gst_required: bool = False,
+    compliance_requirements: Optional[list[str]] = None,
+) -> bool:
+    """True when the L1/blueprint domain classification plausibly touches
+    money, health data, or a named regulatory regime — the cases where a
+    Layer-3 archive table and a lifecycle-transition trail are a defensible
+    default, not a generic nudge applied to every business entity."""
+    d = (domain or "").lower()
+    if any(kw in d for kw in _HIGH_CRITICALITY_DOMAIN_KEYWORDS):
+        return True
+    if gst_required:
+        return True
+    return bool([r for r in (compliance_requirements or []) if r])
+
+
 @dataclass
 class ValidationIssue:
     rule_id: int
@@ -70,12 +102,22 @@ class SchemaValidator:
         "factory_reset_all",
     }
 
-    def validate(self, sql: str) -> ValidationResult:
+    def validate(self, sql: str, *, high_criticality: bool = False) -> ValidationResult:
         """
         Main entry point.
         Pass the raw SQL DDL string, get back a ValidationResult.
+
+        ``high_criticality`` gates the rule-3/4 archive/lifecycle-companion
+        nudge (see ``_check_data_preservation``) — pass True when the
+        caller's domain classification (L1/blueprint ``domain``,
+        ``gst_required``, or named compliance requirements — see
+        ``is_high_criticality_domain``) indicates this schema plausibly
+        touches money, health data, or a named regulatory regime. Defaults
+        to False: every other table is exempt from that nudge by default,
+        per docs/enterprise_standards_spec.md §2.5.
         """
         issues = []
+        self._high_criticality = high_criticality
 
         # Extract table names from SQL
         tables = self._extract_table_names(sql)
@@ -263,12 +305,20 @@ class SchemaValidator:
     def _check_data_preservation(self, sql: str, tables: list[str]) -> list[ValidationIssue]:
         """Three-Layer Data Preservation (rule 3) + Life Cycle Tracking (rule 4).
 
-        Every significant master entity should have an _archive_all mirror
-        (Layer 3) and, when it is status-driven, a _life_cycle_all trail.
-        This is a nudge (low severity), not a hard gate — a schema that
-        genuinely has no mutable business entities will produce no issues.
+        Every significant master entity in a HIGH-CRITICALITY domain (money,
+        health data, or a named regulatory regime — see
+        ``is_high_criticality_domain``) should have an ``_archive_all``
+        mirror (Layer 3) and, when it is status-driven, a
+        ``_life_cycle_all`` trail. This nudge (low severity) is scoped to
+        those domains deliberately: no researched source supports mandating
+        a paired history table for every mutable business entity regardless
+        of domain — see docs/enterprise_standards_spec.md §1.5/§2.5. A
+        schema outside that scope, or one with no mutable business
+        entities, produces no issues here.
         """
         issues = []
+        if not getattr(self, "_high_criticality", False):
+            return issues
         header_tables = [t for t in tables if t.endswith("_header_all")]
         tset = set(tables)
 
@@ -459,20 +509,22 @@ class SchemaValidator:
 
     def _check_fk_naming(self, sql: str) -> list[ValidationIssue]:
         issues = []
+        table_blocks = self._split_into_table_blocks(sql)
 
-        # FKs referencing business ID column instead of id PK
-        bad_fk = re.findall(
-            r'REFERENCES\s+\w+\s*\(\s*(?!id\b)(\w+_id|[a-z]+_no)\s*\)',
-            sql, re.IGNORECASE
-        )
-        for match in bad_fk:
-            issues.append(ValidationIssue(
-                rule_id=31,
-                rule_name="Named FK Constraints",
-                severity="medium",
-                issue=f"FK references business column '{match}' instead of 'id' PK",
-                suggestion="Foreign keys must reference the integer 'id' PRIMARY KEY column",
-            ))
+        # FKs referencing business ID column instead of id PK — per table, so
+        # the finding is attributable to the table that HAS the FK (not just
+        # the schema at large), matching every other per-table check here.
+        fk_re = re.compile(r'REFERENCES\s+\w+\s*\(\s*(?!id\b)(\w+_id|[a-z]+_no)\s*\)', re.IGNORECASE)
+        for table, block in table_blocks.items():
+            for match in fk_re.findall(block):
+                issues.append(ValidationIssue(
+                    rule_id=31,
+                    rule_name="Named FK Constraints",
+                    severity="medium",
+                    issue=f"FK references business column '{match}' instead of 'id' PK",
+                    suggestion="Foreign keys must reference the integer 'id' PRIMARY KEY column",
+                    table_name=table,
+                ))
 
         return issues
 

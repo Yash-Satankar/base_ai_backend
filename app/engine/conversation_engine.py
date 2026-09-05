@@ -34,11 +34,16 @@ class ProjectBlueprint:
     description: str
     domain: str
     all_domains: list[str]
-    modules: list[dict]          # [{name, tables, description}]
+    modules: list[dict]          # [{name, tables, description, schema_name}]
     rules_to_apply: list[int]    # rule IDs
     scale: str                   # "small" | "medium" | "large"
     gst_required: bool
     confirmed: bool = False
+    # Schema decomposition (docs/enterprise_standards_spec.md §2.2) — False
+    # (the default) means every module shares one implicit schema, exactly
+    # as before this feature existed. Only True when the user explicitly
+    # confirmed splitting the project (see turn_loop._think_clarifying).
+    decomposed: bool = False
 
 
 @dataclass
@@ -74,6 +79,13 @@ class ConversationState:
     l5_data: Optional[dict] = None
     l6_data: Optional[dict] = None
     l7_data: Optional[dict] = None
+
+    # Schema decomposition (docs/enterprise_standards_spec.md §2.2) — opt-in,
+    # never inferred silently. decomposition_requested stays None until the
+    # user has explicitly answered the one confirmation question; the
+    # question is asked at most once per session (decomposition_question_asked).
+    decomposition_question_asked: bool = False
+    decomposition_requested: Optional[bool] = None
 
     def add_message(self, role: str, content: str):
         self.messages.append(

@@ -244,19 +244,34 @@ class ScriptedGen:
     - ``empty_batches``: batch numbers that return prose with no DDL every attempt
     """
 
-    def __init__(self, fail_batches=(), transient=None, empty_batches=()):
+    def __init__(self, fail_batches=(), transient=None, empty_batches=(), truncate_once=()):
         self.n = 0                     # total physical invocations
         self.batch = 0                 # current logical batch
         self._attempts_left = 0        # attempts remaining on the current batch
         self.fail_batches = set(fail_batches)
         self.transient = dict(transient or {})
         self.empty_batches = set(empty_batches)
+        self.truncate_once = set(truncate_once)   # batch #: 1st attempt is truncated
+
+    def _tables(self, truncated=False):
+        blocks = [
+            f"CREATE TABLE gen_b{self.batch}_{i}_all (id INT PRIMARY KEY, "
+            f"created_on DATETIME NOT NULL, modified_on DATETIME NOT NULL) "
+            f"ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+            for i in range(4)
+        ]
+        if truncated:                # chop the last statement mid-way
+            blocks[-1] = (f"CREATE TABLE gen_b{self.batch}_3_all (id INT PRIMARY KEY, "
+                          f"name VARCHAR(120) NOT NULL, note TEXT COMMENT 'x') "
+                          f"ENGINE=InnoDB DEFAULT CHAR")
+        return "\n".join(blocks)
 
     def __call__(self, *, system_prompt, user_prompt, max_tokens=None, **kw):
         self.n += 1
         if self._attempts_left == 0:          # a new batch begins
             self.batch += 1
             self._attempts_left = ps._BATCH_RETRY_ATTEMPTS + 1
+            self._truncated_done = set()
         self._attempts_left -= 1
 
         if self.batch in self.fail_batches:
@@ -265,18 +280,15 @@ class ScriptedGen:
             self.transient[self.batch] -= 1
             raise RuntimeError(f"scripted transient failure on batch {self.batch}")
         if self.batch in self.empty_batches:
-            # a no-DDL response is itself a failure the loop should retry
             return {"content": "-- the model rambled and produced no schema --",
                     "usage": {"input_tokens": 100, "output_tokens": 5}}
+        if self.batch in self.truncate_once and self.batch not in getattr(self, "_truncated_done", set()):
+            self._truncated_done = getattr(self, "_truncated_done", set()) | {self.batch}
+            return {"content": self._tables(truncated=True),
+                    "usage": {"input_tokens": 200, "output_tokens": 400}}
 
         self._attempts_left = 0               # success → next call is a new batch
-        ddl = "\n".join(
-            f"CREATE TABLE gen_b{self.batch}_{i}_all (id INT PRIMARY KEY, "
-            f"created_on DATETIME NOT NULL, modified_on DATETIME NOT NULL) "
-            f"ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
-            for i in range(4)
-        )
-        return {"content": ddl, "usage": {"input_tokens": 200, "output_tokens": 400}}
+        return {"content": self._tables(), "usage": {"input_tokens": 200, "output_tokens": 400}}
 
 
 @pytest.fixture
@@ -429,3 +441,24 @@ def test_post_refinement_completeness_gate_fails_a_shrunk_schema(stub_common, mo
     assert job["result"] is None
     assert "incomplete after refinement" in (job["error"] or "").lower()
     assert "5/24" in job["error"]
+
+
+def test_truncated_batch_is_retried_not_stitched(stub_common, monkeypatch):
+    """A batch that returns 3 complete tables + 1 truncated one must be retried,
+    not accepted — a corrupt CREATE TABLE cannot reach the stitched schema."""
+    gen = ScriptedGen(truncate_once={3})     # batch 3's first attempt is truncated
+    monkeypatch.setattr(ps, "generate_schema", gen)
+
+    job = _run(BIG_BLUEPRINT)
+
+    assert job["status"] == "done", job.get("error")
+    gs = job["result"]["generation_summary"]
+    assert gs["tables_generated"] == BIG_PLANNED       # 24 — nothing lost
+    assert gs["modules_failed"] == 0
+    # batch 3 was called twice (truncated, then clean); others once
+    assert gen.n == 7
+    schema = job["result"]["schema"]
+    # every CREATE TABLE in the final schema is a complete, balanced statement
+    from app.services.schema_refiner import _iter_table_blocks, _balanced
+    for _n, _a, _b, block in _iter_table_blocks(schema):
+        assert _balanced(block) and block.rstrip().endswith(";")

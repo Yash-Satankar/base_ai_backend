@@ -103,11 +103,23 @@ class Settings(BaseSettings):
     # round-trip. Honours the Decision-B cost degrade: a degraded conversation is
     # capped to a single iteration. See app/services/schema_refiner.py.
     SCHEMA_REFINE_ENABLED: bool = False
-    SCHEMA_REFINE_MAX_ITERATIONS: int = 3
+    # A single systemic-but-partial LLM compliance gap (e.g. "add an explicit
+    # ON DELETE/ON UPDATE to every FK") on a 30-50 table enterprise schema can
+    # take several passes to fully sweep even once every implicated table is
+    # targeted in one call — the model reliably fixes most but not all FKs
+    # per pass. Empirically, 3 iterations plateaus with real advisories still
+    # outstanding on showcase-scale schemas; 5 gives the incremental cleanup
+    # enough room to actually reach zero before giving up.
+    SCHEMA_REFINE_MAX_ITERATIONS: int = 5
     # A schema is "clean" when it has no structural critical/high issues, MySQL
-    # accepts it, no enterprise-check errors, and advisory findings are at or
-    # below this count.
+    # accepts it, no enterprise-check errors, advisory findings are at or below
+    # this count, AND the structural score is at or above SCHEMA_REFINE_MIN_SCORE
+    # — medium/low severity findings (anonymous indexes, missing archive/
+    # lifecycle companion tables, status-column comments …) still cost real
+    # score even though they never block on their own, so the refiner keeps
+    # going until the score clears the bar too.
     SCHEMA_REFINE_ADVISORY_THRESHOLD: int = 5
+    SCHEMA_REFINE_MIN_SCORE: int = 90
     # The refiner returns the whole corrected schema each iteration, so the
     # budget must hold a full mid-size schema (~180 tok/table) plus headroom.
     SCHEMA_REFINE_MAX_TOKENS: int = 16000
@@ -117,6 +129,16 @@ class Settings(BaseSettings):
     # ratio the job FAILS — a structurally-clean fragment must never be handed
     # back as a finished schema. See generate_database_schema_for_job.
     SCHEMA_COMPLETENESS_MIN_RATIO: float = 0.85
+
+    # Schema decomposition (docs/enterprise_standards_spec.md §2.2-2.4) — off
+    # by default. No researched source supports inferring a schema split from
+    # table count or size; when enabled, a real organizational signal in the
+    # requirement (see app/engine/decomposition_signals.py) triggers ONE
+    # explicit yes/no confirmation question during clarifying — decomposition
+    # is only ever applied after the user answers yes. With this flag off,
+    # the question is never asked and every project stays single-schema,
+    # exactly as before this feature existed.
+    SCHEMA_DECOMPOSITION_ENABLED: bool = False
 
     def get_allowed_origins(self) -> list[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]

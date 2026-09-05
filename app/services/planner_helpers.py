@@ -143,6 +143,8 @@ def run_fix_pass(
     sql: str,
     validation,
     system_prompt: str,
+    *,
+    high_criticality: bool = False,
 ) -> tuple:
     """
     Targeted fix pass: extracts only the problematic table blocks
@@ -194,7 +196,7 @@ TABLE BLOCKS TO FIX:
 
         from app.validators.schema_validator import SchemaValidator
         validator = SchemaValidator()
-        new_validation = validator.validate(fixed_sql)
+        new_validation = validator.validate(fixed_sql, high_criticality=high_criticality)
 
         if new_validation.score >= validation.score:
             logger.info(
